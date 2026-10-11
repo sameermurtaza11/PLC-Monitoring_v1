@@ -7,6 +7,7 @@ package config
 import (
 	"bufio"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,6 +17,11 @@ type Config struct {
 	HTTPAddr       string        // HTTP_ADDR
 	ConfigReload   time.Duration // CONFIG_RELOAD — how often acquisition re-reads plc/pv metadata
 	AcquireEnabled bool          // ACQUISITION — "off" runs the web UI only
+
+	// Login session cookie. Secure must be true when served over HTTPS.
+	CookieSecure   bool          // COOKIE_SECURE   — "true" for HTTPS deployments (default false: local HTTP works)
+	CookieSameSite string        // COOKIE_SAMESITE — "lax" (default) or "strict"
+	SessionHours   time.Duration // SESSION_HOURS   — how long a login lasts (default 12)
 }
 
 func Load() Config {
@@ -28,6 +34,9 @@ func Load() Config {
 		HTTPAddr:       env("HTTP_ADDR", ":8080"),
 		ConfigReload:   envDuration("CONFIG_RELOAD", 10*time.Second),
 		AcquireEnabled: env("ACQUISITION", "on") != "off",
+		CookieSecure:   strings.EqualFold(env("COOKIE_SECURE", "false"), "true"),
+		CookieSameSite: strings.ToLower(env("COOKIE_SAMESITE", "lax")),
+		SessionHours:   time.Duration(envInt("SESSION_HOURS", 12)) * time.Hour,
 	}
 }
 
@@ -36,6 +45,14 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	n, err := strconv.Atoi(env(key, ""))
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
 }
 
 func envDuration(key string, fallback time.Duration) time.Duration {

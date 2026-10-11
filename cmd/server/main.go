@@ -56,7 +56,11 @@ func main() {
 	}
 
 	gin.SetMode(gin.ReleaseMode)
-	httpSrv := &http.Server{Addr: cfg.HTTPAddr, Handler: web.NewRouter(db, onConfigChange)}
+	httpSrv := &http.Server{Addr: cfg.HTTPAddr, Handler: web.NewRouter(db, onConfigChange, web.Options{
+		CookieSecure:    cfg.CookieSecure,
+		SameSiteStrict:  cfg.CookieSameSite == "strict",
+		SessionLifetime: cfg.SessionHours,
+	})}
 	go func() {
 		log.Printf("web UI on http://localhost%s", cfg.HTTPAddr)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

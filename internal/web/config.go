@@ -46,7 +46,7 @@ func (s *Server) configPage(c *gin.Context) {
 	if err != nil {
 		log.Printf("web: list plcs: %v", err)
 	}
-	c.HTML(http.StatusOK, "config.html", gin.H{"Page": "config", "PLCs": plcs})
+	c.HTML(http.StatusOK, "config.html", s.pageData(c, "config", gin.H{"PLCs": plcs}))
 }
 
 // saved closes the dialog, refreshes the lists and reloads acquisition.

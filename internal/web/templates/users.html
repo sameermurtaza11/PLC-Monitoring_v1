@@ -1,0 +1,47 @@
+{{define "user_rows.html"}}
+{{$me := .Me}}
+{{range .Users}}
+<tr>
+  <td class="num">{{.ID}}</td>
+  <td class="strong">{{.Username}}{{if eq .ID $me.ID}} <span class="tag">you</span>{{end}}</td>
+  <td><span class="badge {{roleClass .Role}}">{{roleLabel .Role}}</span></td>
+  <td class="muted">{{dt .CreatedOn}}</td>
+  <td class="muted">{{lastOnline .LastOnline}}</td>
+  <td class="actions">
+    <button type="button" hx-get="/config/users/{{.ID}}/edit" hx-target="#form-body">Edit</button>
+    <button type="button" class="danger" hx-delete="/config/users/{{.ID}}" hx-target="#config-msg"
+            hx-confirm="Delete user {{.Username}}?{{if eq .ID $me.ID}} This is YOUR account: you will be signed out.{{end}}">Delete</button>
+  </td>
+</tr>
+{{else}}
+<tr><td colspan="6" class="muted">No users.</td></tr>
+{{end}}
+{{end}}
+
+{{define "user_form.html"}}
+<form hx-post="/config/users{{if .F.ID}}/{{.F.ID}}{{end}}" hx-target="#form-body" class="cfg-form" autocomplete="off"
+      data-title="{{if .F.ID}}Edit user{{else}}Add user{{end}}">
+  {{with index .F.Errors "_"}}<div class="msg error">{{.}}</div>{{end}}
+  <div class="grid2">
+    <label>Username *
+      <input name="username" value="{{.F.V "username"}}" required maxlength="100" autofocus autocomplete="off">
+      <span class="hint">3–100 characters: letters, digits and . _ - @ (not case-sensitive)</span>
+      {{template "field_error" (fe .F "username")}}</label>
+    <label>Role *
+      <select name="role" required>
+        {{$sel := .F.V "role"}}
+        {{range .Roles}}<option value="{{printf "%s" .}}" {{if eq (printf "%s" .) $sel}}selected{{end}}>{{.Label}}</option>{{end}}
+      </select>
+      {{template "field_error" (fe .F "role")}}</label>
+  </div>
+  <label>Password {{if not .F.ID}}*{{end}}
+    <input name="password" type="text" value="{{.F.V "password"}}" {{if not .F.ID}}required{{end}}
+           maxlength="128" autocomplete="off" spellcheck="false">
+    <span class="hint">{{if .F.ID}}Shown to administrators only. Leave it empty to keep the current password.{{else}}8 to 128 characters.{{end}}</span>
+    {{template "field_error" (fe .F "password")}}</label>
+  <div class="form-actions">
+    <button type="button" onclick="document.getElementById('form-modal').close()">Cancel</button>
+    <button type="submit" class="primary">Save</button>
+  </div>
+</form>
+{{end}}

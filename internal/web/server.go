@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 
+	"PLC_Monitoring/internal/auth"
 	"PLC_Monitoring/internal/store"
 )
 
@@ -25,16 +26,34 @@ var templateFS embed.FS
 //go:embed static
 var staticFS embed.FS
 
+// Options are the login/session settings (see config.Config).
+type Options struct {
+	CookieSecure    bool          // Secure flag of the session cookie (HTTPS deployments)
+	SameSiteStrict  bool          // SameSite=Strict instead of Lax
+	SessionLifetime time.Duration // 0 = auth.DefaultSessionLifetime
+}
+
 type Server struct {
 	store          *store.Store
+	auth           *auth.Service
+	cookie         auth.CookieOptions
 	onConfigChange func() // tells acquisition to reload PLC/PV config now
 }
 
-func NewRouter(s *store.Store, onConfigChange func()) *gin.Engine {
-	srv := &Server{store: s, onConfigChange: onConfigChange}
+func NewRouter(s *store.Store, onConfigChange func(), opt Options) *gin.Engine {
+	cookie := auth.CookieOptions{Secure: opt.CookieSecure, SameSite: http.SameSiteLaxMode}
+	if opt.SameSiteStrict {
+		cookie.SameSite = http.SameSiteStrictMode
+	}
+	srv := &Server{
+		store: s, auth: auth.NewService(s, opt.SessionLifetime), cookie: cookie,
+		onConfigChange: onConfigChange,
+	}
 
 	r := gin.New()
-	r.Use(gin.Recovery(), requestLogger())
+	// auth.Load identifies the user; auth.Guard then applies auth.Rules to EVERY
+	// route (a route without a rule is closed to non-administrators).
+	r.Use(gin.Recovery(), requestLogger(), auth.Load(srv.auth), auth.Guard(srv.denied))
 
 	tmpl := template.Must(template.New("").Funcs(funcs).ParseFS(templateFS, "templates/*.html"))
 	r.SetHTMLTemplate(tmpl)
@@ -52,15 +71,29 @@ func NewRouter(s *store.Store, onConfigChange func()) *gin.Engine {
 	r.GET("/config/plcs", srv.plcList)
 	r.GET("/config/plcs/new", srv.plcForm)
 	r.GET("/config/plcs/:id/edit", srv.plcForm)
-	r.POST("/config/plcs", srv.plcSave)
-	r.POST("/config/plcs/:id", srv.plcSave)
-	r.DELETE("/config/plcs/:id", srv.plcDelete)
+	csrf := auth.RequireCSRF() // pages send the token in the X-CSRF-Token header (see config.html)
+	r.POST("/config/plcs", csrf, srv.plcSave)
+	r.POST("/config/plcs/:id", csrf, srv.plcSave)
+	r.DELETE("/config/plcs/:id", csrf, srv.plcDelete)
 	r.GET("/config/pvs", srv.pvList)
 	r.GET("/config/pvs/new", srv.pvForm)
 	r.GET("/config/pvs/:id/edit", srv.pvForm)
-	r.POST("/config/pvs", srv.pvSave)
-	r.POST("/config/pvs/:id", srv.pvSave)
-	r.DELETE("/config/pvs/:id", srv.pvDelete)
+	r.POST("/config/pvs", csrf, srv.pvSave)
+	r.POST("/config/pvs/:id", csrf, srv.pvSave)
+	r.DELETE("/config/pvs/:id", csrf, srv.pvDelete)
+
+	// User management (administrators only)
+	r.GET("/config/users", srv.userList)
+	r.GET("/config/users/new", srv.userForm)
+	r.GET("/config/users/:id/edit", srv.userForm)
+	r.POST("/config/users", csrf, srv.userSave)
+	r.POST("/config/users/:id", csrf, srv.userSave)
+	r.DELETE("/config/users/:id", csrf, srv.userDelete)
+
+	// Login, logout (public / any logged-in user)
+	r.GET("/login", srv.loginPage)
+	r.POST("/login", srv.login)
+	r.POST("/logout", auth.RequireCSRF(), srv.logout)
 
 	r.GET("/favicon.ico", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 	r.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
@@ -73,7 +106,7 @@ func NewRouter(s *store.Store, onConfigChange func()) *gin.Engine {
 // ---------------------------------------------------------------------
 
 func (s *Server) dashboard(c *gin.Context) {
-	c.HTML(http.StatusOK, "dashboard.html", gin.H{"Page": "dashboard"})
+	c.HTML(http.StatusOK, "dashboard.html", s.pageData(c, "dashboard", nil))
 }
 
 // pvRows is polled by HTMX every 2 s and returns only <tr> rows.
@@ -189,6 +222,24 @@ type fieldRef struct {
 var funcs = template.FuncMap{
 	"fe":     func(f form, name string) fieldRef { return fieldRef{f.Errors, name} },
 	"status": statusOf,
+	// users
+	"roleLabel": func(r string) string { return auth.Role(r).Label() },
+	"roleClass": func(r string) string {
+		switch auth.Role(r) {
+		case auth.Admin:
+			return "bad"
+		case auth.Supervisor:
+			return "warn"
+		}
+		return "none"
+	},
+	"dt": func(t time.Time) string { return t.Local().Format("2006-01-02 15:04") },
+	"lastOnline": func(t *time.Time) string {
+		if t == nil {
+			return "Never"
+		}
+		return t.Local().Format("2006-01-02 15:04")
+	},
 	// display: the value as an operator reads it — state text for digital
 	// inputs, 2 decimals for analog values.
 	"display": func(r store.LatestRow) string {

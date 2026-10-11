@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login · PLC Monitoring</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  {{template "nav" .}}
+
+  <main>
+    <section class="account-box">
+      <h2>Log in</h2>
+      {{if .Error}}<p class="msg error" role="alert">{{.Error}}</p>{{end}}
+      <form method="post" action="/login" class="account-form">
+        <input type="hidden" name="next" value="{{.Next}}">
+        <label>Username <input name="username" autocomplete="username" required autofocus maxlength="100"></label>
+        <label>Password <input name="password" type="password" autocomplete="current-password" required maxlength="128"></label>
+        <button type="submit" class="primary">Login</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

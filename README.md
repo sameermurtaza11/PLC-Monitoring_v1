@@ -107,3 +107,62 @@ Optional: `copy .env.example .env` and set `DATABASE_URL` if your DB needs a pas
 ### Delete rules
 - PLC with PVs → blocked. PV with history → blocked unless "Delete PV and its history" is confirmed.
   Disabling keeps the history.
+
+## Login, roles and users
+
+Every page needs a login (except `/login`, `/healthz` and the static files).
+
+| Role | Dashboard, PV detail, history | Configuration (PLC / PV) | User management |
+|---|---|---|---|
+| operator | yes | no | no |
+| supervisor | yes | yes | no |
+| admin | yes | yes | yes |
+
+Access is enforced on the server for every request, from one table: `internal/auth/rules.go`.
+A route that is not listed there is closed to everyone except administrators, and a test
+(`internal/web/routes_test.go`) fails if a route has no rule.
+
+### First setup (there is no default account)
+
+```powershell
+$env:PGCLIENTENCODING = "UTF8"
+psql -U postgres -d plc_monitoring -f migrations/003_users.sql      # creates users + sessions (safe to re-run)
+go run ./cmd/adduser -user YOURNAME -role admin                      # asks for the password (8-128 chars)
+go run ./cmd/server
+```
+
+`adduser` reads the password from the `PLC_USER_PASSWORD` environment variable or asks for it;
+it is never a command-line argument. After that, administrators manage users in
+**Configuration → User Management** (create, edit, delete; the last administrator can be neither
+deleted nor demoted).
+
+### Sessions and cookies (`.env`)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `COOKIE_SECURE` | `false` | set `true` when served over HTTPS (keeps the cookie off plain HTTP) |
+| `COOKIE_SAMESITE` | `lax` | `lax` or `strict` |
+| `SESSION_HOURS` | `12` | how long a login lasts |
+
+The cookie is always HTTP-only and holds only a random token; the server stores its hash. The
+user's role is read from the database on every request, so a role change or a deleted account
+applies immediately. Logging in always issues a new session identifier; logout destroys the
+session on the server. Forms and HTMX requests carry a CSRF token.
+
+### Known limitation: passwords are stored in plain text (Version 01)
+
+`users.password` holds the password as typed, by decision, and administrators can see it in the
+edit form. Anyone who can read the database or a backup can read every password. All reading and
+writing goes through `internal/auth/password.go` (`StorePassword` / `VerifyPassword`), so moving to
+hashed passwords later means changing that file and migrating the existing rows.
+`last_online` is the time of the last successful login, not live presence.
+
+### Tests
+
+`go test ./...` runs the unit tests. The database test for user management is opt-in and only
+runs on a database whose name contains `scratch` or `test` (it empties `users`):
+
+```powershell
+$env:PLC_TEST_DATABASE_URL = "postgres://postgres@localhost:5432/plc_users_scratch"
+go test ./internal/store/ -run Integration -v
+```

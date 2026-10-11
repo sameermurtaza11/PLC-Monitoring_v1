@@ -2,8 +2,17 @@
 <header>
   <h1>PLC Monitoring</h1>
   <nav>
-    <a href="/" {{if eq .Page "dashboard"}}class="active"{{end}}>Dashboard</a>
-    <a href="/config" {{if eq .Page "config"}}class="active"{{end}}>Configuration</a>
+    {{$page := .Page}}
+    {{range .Nav}}<a href="{{.Href}}" {{if eq .Key $page}}class="active"{{end}}>{{.Label}}</a>{{end}}
   </nav>
+  {{if .User}}
+  <div class="account-nav">
+    <span class="who">{{.User.Username}} <span class="tag">{{.User.Role.Label}}</span></span>
+    <form method="post" action="/logout" class="inline">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button type="submit">Logout</button>
+    </form>
+  </div>
+  {{end}}
 </header>
 {{end}}

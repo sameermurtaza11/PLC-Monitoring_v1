@@ -110,3 +110,13 @@ button.danger:hover { background: #fdf2f2; }
 .analog-only[hidden], .digital-only[hidden] { display: none !important; }
 .cfg-form fieldset { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px 12px; margin: 0; }
 .cfg-form legend { padding: 0 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
+
+/* Login / account / user management */
+.account-nav { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+.account-nav .who { color: #e5e7eb; }
+.account-nav .tag { background: rgba(255,255,255,.15); color: #e5e7eb; }
+form.inline { display: inline; margin: 0; }
+.account-box { max-width: 380px; }
+.account-form { display: grid; gap: 10px; }
+.account-form label { display: grid; gap: 4px; }
+.account-form input { padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font: inherit; }

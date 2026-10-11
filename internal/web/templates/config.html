@@ -8,7 +8,7 @@
   <script src="/static/htmx.min.js"></script>
   <script src="/static/config.js" defer></script>
 </head>
-<body>
+<body hx-headers='{"X-CSRF-Token": "{{.CSRF}}"}'>
   {{template "nav" .}}
 
   <main>
@@ -58,6 +58,21 @@
       </table>
       </div>
     </section>
+    {{if .IsAdmin}}
+    <section>
+      <div class="section-head">
+        <h2>User Management</h2>
+        <button type="button" class="primary" hx-get="/config/users/new" hx-target="#form-body">+ Add User</button>
+      </div>
+      <table class="pv-table">
+        <thead>
+          <tr><th class="num">ID</th><th>Username</th><th>Role</th><th>Created On</th><th>Last Online</th><th></th></tr>
+        </thead>
+        <tbody hx-get="/config/users" hx-trigger="load, configSaved from:body" hx-swap="innerHTML">
+        </tbody>
+      </table>
+    </section>
+    {{end}}
   </main>
 
   <!-- Add / edit form dialog -->
