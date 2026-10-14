@@ -1,0 +1,137 @@
+{{define "alarm_rows.html"}}
+{{$admin := .IsAdmin}}
+{{range .Alarms}}
+<tr>
+  <td>{{.PLCName}} / <span class="strong">{{.PVName}}</span></td>
+  <td><span class="tag">{{.AlarmType}}</span></td>
+  <td>{{.Trigger}}</td>
+  <td class="num">{{if .Digital}}—{{else}}{{f .Deadband}}{{end}}</td>
+  <td class="num">{{.OnDelayS}} / {{.OffDelayS}} s</td>
+  <td><span class="badge {{priorityClass .Priority}}">{{.Priority}}</span></td>
+  <td class="muted">{{.AlarmClass}}</td>
+  <td>
+    {{if eq .RationalizationStatus "APPROVED"}}<span class="badge ok" title="approved by {{.ApprovedByName}}">Approved</span>
+    {{else}}<span class="badge warn">Draft</span>{{end}}
+  </td>
+  <td>{{if .Enabled}}<span class="badge ok">Yes</span>{{else}}<span class="badge none">No</span>{{end}}</td>
+  <td>{{range .Issues}}<div class="error small">{{.}}</div>{{else}}<span class="muted">—</span>{{end}}</td>
+  <td class="actions">
+    <button type="button" hx-get="/config/alarms/{{.ID}}/edit" hx-target="#form-body">Edit</button>
+    {{if and $admin (eq .RationalizationStatus "DRAFT")}}
+    <button type="button" hx-post="/config/alarms/{{.ID}}/approve" hx-target="#config-msg"
+            hx-confirm="Approve the rationalization of {{.PVName}} {{.AlarmType}} (priority {{.Priority}})? The alarm is then evaluated.">Approve</button>
+    {{end}}
+  </td>
+</tr>
+{{else}}
+<tr><td colspan="11" class="muted">No alarms configured yet.</td></tr>
+{{end}}
+{{end}}
+
+{{define "alarm_form.html"}}
+<form hx-post="/config/alarms{{if .F.ID}}/{{.F.ID}}{{end}}" hx-target="#form-body" class="cfg-form"
+      data-title="{{if .F.ID}}Edit alarm{{else}}Add alarm{{end}}">
+  {{with index .F.Errors "_"}}<div class="msg error">{{.}}</div>{{end}}
+
+  <fieldset>
+    <legend>Definition</legend>
+    <div class="grid2">
+      {{if .Def}}
+      <label>Process variable<input value="{{.Def.PLCName}} / {{.Def.PVName}}" disabled></label>
+      <label>Alarm type<input value="{{.Def.AlarmType}}" disabled></label>
+      <input type="hidden" name="unit" value="{{.F.V "unit"}}">
+      {{else}}
+      <label>Process variable *
+        {{$pv := .F.V "pv_id"}}
+        <select name="pv_id" required>
+          <option value="">— select —</option>
+          {{range .PVs}}<option value="{{.ID}}" {{if eq (printf "%d" .ID) $pv}}selected{{end}}>{{.PLCName}} / {{.Name}}{{if .Digital}} (digital){{else}} ({{.Unit}}, {{f .Min}} … {{f .Max}}){{end}}</option>{{end}}
+        </select>
+        {{template "field_error" (fe .F "pv_id")}}</label>
+      <label>Alarm type *
+        {{$t := .F.V "alarm_type"}}
+        <select name="alarm_type" required>
+          <option value="">— select —</option>
+          {{range .Types}}<option value="{{.}}" {{if eq . $t}}selected{{end}}>{{.}}</option>{{end}}
+        </select>
+        <span class="hint">HIHI, HI, LO, LOLO for analog PVs; DISCRETE for digital inputs. This is the condition, not the priority.</span>
+        {{template "field_error" (fe .F "alarm_type")}}</label>
+      {{end}}
+      <label>Setpoint{{if .Def}} ({{.Def.PVUnit}}){{end}}
+        <input name="setpoint" value="{{.F.V "setpoint"}}" inputmode="decimal">
+        <span class="hint">Analog alarms: HIHI/HI trigger at or above, LO/LOLO at or below. Must lie inside the PV range{{if .Def}} {{f .Def.PVMin}} … {{f .Def.PVMax}} {{.Def.PVUnit}}{{end}}.</span>
+        {{template "field_error" (fe .F "setpoint")}}
+        {{template "field_error" (fe .F "setpoint_unit")}}</label>
+      <label>Abnormal state (DISCRETE)
+        {{$ts := .F.V "trigger_state"}}
+        <select name="trigger_state">
+          <option value="">—</option>
+          <option value="0" {{if eq $ts "0"}}selected{{end}}>0{{if .Def}} ({{.Def.State0Text}}){{end}}</option>
+          <option value="1" {{if eq $ts "1"}}selected{{end}}>1{{if .Def}} ({{.Def.State1Text}}){{end}}</option>
+        </select>
+        {{template "field_error" (fe .F "trigger_state")}}</label>
+      <label>Deadband
+        <input name="deadband" value="{{.F.V "deadband"}}" inputmode="decimal">
+        <span class="hint">In the PV's unit. The alarm returns to normal only after the value is this far back inside the limit.</span>
+        {{template "field_error" (fe .F "deadband")}}</label>
+      <label>On-delay (s)
+        <input name="on_delay_s" value="{{.F.V "on_delay_s"}}" inputmode="numeric">
+        <span class="hint">The condition must persist this long before the alarm activates.</span>
+        {{template "field_error" (fe .F "on_delay_s")}}</label>
+      <label>Off-delay (s)
+        <input name="off_delay_s" value="{{.F.V "off_delay_s"}}" inputmode="numeric">
+        <span class="hint">The value must stay normal this long before the alarm returns to normal.</span>
+        {{template "field_error" (fe .F "off_delay_s")}}</label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Rationalization</legend>
+    <div class="grid2">
+      <label>Priority *
+        {{$p := .F.V "priority"}}
+        <select name="priority" required>
+          <option value="">— select —</option>
+          {{range .Priorities}}<option value="{{.}}" {{if eq . $p}}selected{{end}}>{{.}}</option>{{end}}
+        </select>
+        <span class="hint">Chosen by the site's Alarm Philosophy criteria, not by the alarm type.</span>
+        {{template "field_error" (fe .F "priority")}}</label>
+      <label>Alarm class *
+        {{$c := .F.V "alarm_class"}}
+        <select name="alarm_class" required>
+          <option value="">— select —</option>
+          {{range .Classes}}<option value="{{.}}" {{if eq . $c}}selected{{end}}>{{.}}</option>{{end}}
+        </select>
+        {{template "field_error" (fe .F "alarm_class")}}</label>
+    </div>
+    <label>Alarm message *<input name="alarm_message" value="{{.F.V "alarm_message"}}" maxlength="200" required>
+      <span class="hint">What the operator reads, e.g. “PT101 — High Pressure”.</span>
+      {{template "field_error" (fe .F "alarm_message")}}</label>
+    <label>Operator action<textarea name="operator_action" rows="2">{{.F.V "operator_action"}}</textarea>
+      {{template "field_error" (fe .F "operator_action")}}</label>
+    <label>Consequences of inaction<textarea name="consequences_of_inaction" rows="2">{{.F.V "consequences_of_inaction"}}</textarea>
+      {{template "field_error" (fe .F "consequences_of_inaction")}}</label>
+    <label>Probable cause<textarea name="probable_cause" rows="2">{{.F.V "probable_cause"}}</textarea></label>
+    <div class="grid2">
+      <label>Maximum response time (s)
+        <input name="max_response_time_s" value="{{.F.V "max_response_time_s"}}" inputmode="numeric">
+        <span class="hint">How long the operator may take to respond. Not the on-delay.</span>
+        {{template "field_error" (fe .F "max_response_time_s")}}</label>
+    </div>
+    <label>Rationale
+      <textarea name="rationale" rows="2">{{.F.V "rationale"}}</textarea>
+      <span class="hint">Why this priority and class. Required before an administrator can approve the alarm.</span>
+      {{template "field_error" (fe .F "rationale")}}</label>
+    {{if .Def}}<p class="hint">Status: <strong>{{.Def.RationalizationStatus}}</strong>.
+      Changing the setpoint, delays, deadband, priority, class, operator action, consequences or rationale of an approved alarm withdraws the approval.</p>{{end}}
+  </fieldset>
+
+  <label class="check"><input type="checkbox" name="enabled" {{if .F.Checked "enabled"}}checked{{end}}> Enabled (an enabled alarm is evaluated once its rationalization is approved)</label>
+  <label>Reason for this change (optional, goes to the audit log)<input name="change_reason" maxlength="500" value=""></label>
+
+  <div class="form-actions">
+    <button type="button" onclick="document.getElementById('form-modal').close()">Cancel</button>
+    <button type="submit" class="primary">Save</button>
+  </div>
+</form>
+{{end}}

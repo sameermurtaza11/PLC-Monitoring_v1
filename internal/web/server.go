@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 
+	"PLC_Monitoring/internal/alarms"
 	"PLC_Monitoring/internal/auth"
 	"PLC_Monitoring/internal/store"
 )
@@ -37,6 +38,7 @@ type Server struct {
 	store          *store.Store
 	auth           *auth.Service
 	cookie         auth.CookieOptions
+	alarmCfg       *alarms.ConfigService
 	onConfigChange func() // tells acquisition to reload PLC/PV config now
 }
 
@@ -46,7 +48,7 @@ func NewRouter(s *store.Store, onConfigChange func(), opt Options) *gin.Engine {
 		cookie.SameSite = http.SameSiteStrictMode
 	}
 	srv := &Server{
-		store: s, auth: auth.NewService(s, opt.SessionLifetime), cookie: cookie,
+		store: s, auth: auth.NewService(s, opt.SessionLifetime), cookie: cookie, alarmCfg: alarms.NewConfigService(s),
 		onConfigChange: onConfigChange,
 	}
 
@@ -81,6 +83,14 @@ func NewRouter(s *store.Store, onConfigChange func(), opt Options) *gin.Engine {
 	r.POST("/config/pvs", csrf, srv.pvSave)
 	r.POST("/config/pvs/:id", csrf, srv.pvSave)
 	r.DELETE("/config/pvs/:id", csrf, srv.pvDelete)
+
+	// Alarm configuration (supervisors and administrators; approval: administrators)
+	r.GET("/config/alarms", srv.alarmList)
+	r.GET("/config/alarms/new", srv.alarmForm)
+	r.GET("/config/alarms/:id/edit", srv.alarmForm)
+	r.POST("/config/alarms", csrf, srv.alarmSave)
+	r.POST("/config/alarms/:id", csrf, srv.alarmSave)
+	r.POST("/config/alarms/:id/approve", csrf, srv.alarmApprove)
 
 	// User management (administrators only)
 	r.GET("/config/users", srv.userList)
@@ -222,6 +232,16 @@ type fieldRef struct {
 var funcs = template.FuncMap{
 	"fe":     func(f form, name string) fieldRef { return fieldRef{f.Errors, name} },
 	"status": statusOf,
+	// alarms
+	"priorityClass": func(p string) string {
+		switch p {
+		case store.PriorityCritical:
+			return "bad"
+		case store.PriorityMajor:
+			return "warn"
+		}
+		return "none"
+	},
 	// users
 	"roleLabel": func(r string) string { return auth.Role(r).Label() },
 	"roleClass": func(r string) string {

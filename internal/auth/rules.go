@@ -36,6 +36,14 @@ var Rules = map[string]Level{
 	"POST /config/pvs/:id":      Config,
 	"DELETE /config/pvs/:id":    Config,
 
+	// alarm configuration: supervisors and administrators edit, administrators approve
+	"GET /config/alarms":              Config,
+	"GET /config/alarms/new":          Config,
+	"GET /config/alarms/:id/edit":     Config,
+	"POST /config/alarms":             Config,
+	"POST /config/alarms/:id":         Config,
+	"POST /config/alarms/:id/approve": AdminOnly,
+
 	// administrators only: user management
 	"GET /config/users":          AdminOnly,
 	"GET /config/users/new":      AdminOnly,

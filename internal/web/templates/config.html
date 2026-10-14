@@ -58,6 +58,25 @@
       </table>
       </div>
     </section>
+    <section>
+      <div class="section-head">
+        <h2>Alarm Configuration</h2>
+        <button type="button" class="primary" hx-get="/config/alarms/new" hx-target="#form-body">+ Add Alarm</button>
+      </div>
+      <p class="muted small">One row per configured alarm. An alarm is evaluated only when it is enabled and its rationalization is
+        <strong>approved</strong> by an administrator; changing rationalized values withdraws the approval. Every change is written to the audit log.</p>
+      <div class="table-scroll">
+      <table class="pv-table">
+        <thead>
+          <tr><th>PV</th><th>Type</th><th>Trigger</th><th class="num">Deadband</th><th class="num">On / Off delay</th>
+              <th>Priority</th><th>Class</th><th>Rationalization</th><th>Enabled</th><th>Issues</th><th></th></tr>
+        </thead>
+        <tbody hx-get="/config/alarms" hx-trigger="load, configSaved from:body" hx-swap="innerHTML">
+        </tbody>
+      </table>
+      </div>
+    </section>
+
     {{if .IsAdmin}}
     <section>
       <div class="section-head">

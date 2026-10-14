@@ -3,11 +3,13 @@ package web
 import (
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
 	"PLC_Monitoring/internal/auth"
+	"PLC_Monitoring/internal/store"
 )
 
 // navItem is one link of the top menu.
@@ -50,6 +52,7 @@ func (s *Server) pageData(c *gin.Context, page string, extra gin.H) gin.H {
 // HTMX (so a polled fragment never fills with the login page when a session
 // ends), a "not permitted" page for a logged-in user whose role may not.
 func (s *Server) denied(c *gin.Context, d auth.Denial) {
+	s.auditAlarmDenial(c, d)
 	hx := c.GetHeader("HX-Request") != ""
 	switch {
 	case d.NeedLogin && hx:
@@ -64,6 +67,20 @@ func (s *Server) denied(c *gin.Context, d auth.Denial) {
 	default:
 		c.HTML(http.StatusForbidden, "forbidden.html", s.pageData(c, "forbidden", nil))
 	}
+}
+
+// auditAlarmDenial records a logged-in user's refused attempt on an alarm
+// route, so refused actions are as visible as permitted ones.
+func (s *Server) auditAlarmDenial(c *gin.Context, d auth.Denial) {
+	if d.Status != http.StatusForbidden || d.User == nil || s.store == nil || !strings.HasPrefix(c.FullPath(), "/config/alarms") {
+		return
+	}
+	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	_ = s.store.RecordAlarmAudit(c.Request.Context(), store.AlarmAudit{
+		Actor:  store.Actor{ID: d.User.ID, Username: d.User.Username, IP: c.ClientIP()},
+		Action: "ACTION_DENIED", AlarmID: id, Outcome: "denied",
+		Reason: "role " + string(d.User.Role) + " may not " + c.Request.Method + " " + c.FullPath(),
+	})
 }
 
 // hxPath is the page the browser is on when an htmx request is made.
