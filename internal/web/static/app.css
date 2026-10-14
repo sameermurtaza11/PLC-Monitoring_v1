@@ -302,3 +302,36 @@ body:has(#alarm-ticker) { padding-bottom: var(--ticker-h); }
   .pv-detail .meta dt { margin-top: 6px; font-size: 12px; }
 }
 .pv-detail .live-wrap { text-align: left; }
+
+/* ---- configuration: PV form with its alarms, delete confirmation ---- */
+.form-dialog { width: min(1000px, 96vw); max-height: 94vh; }
+.form-dialog[open] { display: flex; flex-direction: column; }
+.form-dialog .modal-head { flex: none; background: #fff; }
+#form-body { flex: 1; min-height: 0; overflow-y: auto; }
+.cfg-form .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 16px; }
+.cfg-form textarea { padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font: inherit; color: var(--text); resize: vertical; }
+.alarms-box { border-color: #b8c7e0 !important; background: #fafcff; }
+.alarms-box > legend { font-size: 13px !important; color: var(--text) !important; }
+.alarms-box .toggle { padding: 2px 0 6px; }
+.alarms-box .toggle input { width: 18px; height: 18px; }
+#alarm-fields[hidden], .alarm-body[hidden] { display: none; }
+.alarm-set { display: flex; flex-direction: column; gap: 10px; }
+.alarm-set[hidden] { display: none !important; }
+.alarm-card { border: 1px solid var(--line); border-radius: 6px; background: #fff; padding: 8px 12px; }
+.alarm-card.off { background: #f7f8fa; }
+.alarm-card-head { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+.alarm-body { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.alarm-more { border-top: 1px dashed var(--line); padding-top: 6px; }
+.alarm-more summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 2px 0 6px; }
+.alarm-more label { margin-bottom: 6px; }
+.alarm-reason { margin-top: 8px; }
+.delete-warning { background: #fdf2f2; border: 1px solid #f1c4c4; color: #7f1d1d; border-radius: 6px; padding: 10px 14px; }
+.delete-warning p { margin: 6px 0 0; }
+.delete-effects { margin: 0; padding-left: 20px; color: var(--text); }
+.delete-effects li { margin: 4px 0; }
+.confirm-box { padding: 8px 10px; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 6px; }
+@media (max-width: 720px) {
+  .cfg-form .grid3 { grid-template-columns: 1fr; }
+  .form-dialog { width: 100vw; max-width: 100vw; max-height: 100vh; height: 100vh; border-radius: 0; }
+  .cfg-form { padding: 12px; }
+}

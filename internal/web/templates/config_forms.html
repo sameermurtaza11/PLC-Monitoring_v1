@@ -48,12 +48,12 @@
     <label>Equipment<input name="equipment" value="{{.V "equipment"}}"></label>
   </div>
 
-  <!-- Analog (3xxxx / 4xxxx): scaling, unit, history deadband. Alarms are configured under Alarm Configuration. -->
+  <!-- Analog (3xxxx / 4xxxx): scaling, unit, history deadband. -->
   <fieldset class="grid2 analog-only">
     <legend>Analog — 16-bit register, scaled</legend>
     <label>Unit<input name="unit" value="{{.V "unit"}}" placeholder="bar, °C, %">
       {{template "field_error" (fe . "unit")}}</label>
-    <label>Deadband (history)<input name="deadband" type="number" step="any" min="0" value="{{.V "deadband"}}">
+    <label>History deadband<input name="deadband" type="number" step="any" min="0" value="{{.V "deadband"}}">
       <span class="hint">0 = store every scan</span>
       {{template "field_error" (fe . "deadband")}}</label>
     <label>PV min (raw 0) *<input name="pv_min" type="number" step="any" value="{{.V "pv_min"}}">
@@ -62,7 +62,7 @@
       {{template "field_error" (fe . "pv_max")}}</label>
   </fieldset>
 
-  <!-- Digital (1xxxx): state texts. Alarms are configured under Alarm Configuration. -->
+  <!-- Digital (1xxxx): state texts. -->
   <fieldset class="grid2 digital-only">
     <legend>Digital — 1-bit discrete input</legend>
     <label>Text for 0 *<input name="state0_text" value="{{.V "state0_text"}}" maxlength="32" placeholder="OFF / STOPPED / CLOSED">
@@ -74,6 +74,9 @@
 
   <label>Description<input name="description" value="{{.V "description"}}"></label>
   <label class="check"><input type="checkbox" name="enabled" {{if .Checked "enabled"}}checked{{end}}> Enabled (acquire this PV)</label>
+
+  {{template "pv_alarms_form" .}}
+
   <div class="form-actions">
     <button type="button" onclick="document.getElementById('form-modal').close()">Cancel</button>
     <button type="submit" class="primary">Save</button>

@@ -109,7 +109,8 @@ func NewRouter(s *store.Store, onConfigChange func(), opt Options) *gin.Engine {
 	r.GET("/config/pvs/:id/edit", srv.pvForm)
 	r.POST("/config/pvs", csrf, srv.pvSave)
 	r.POST("/config/pvs/:id", csrf, srv.pvSave)
-	r.DELETE("/config/pvs/:id", csrf, srv.pvDelete)
+	r.GET("/config/pvs/:id/delete", srv.pvDeleteForm)    // warning + confirmation
+	r.POST("/config/pvs/:id/delete", csrf, srv.pvDelete) // only with the confirmation
 
 	// Alarm configuration (supervisors and administrators; approval: administrators)
 	r.GET("/config/alarms", srv.alarmList)

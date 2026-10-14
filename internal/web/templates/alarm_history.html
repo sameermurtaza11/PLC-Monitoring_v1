@@ -17,7 +17,7 @@
       <label>Alarm
         <select name="alarm">
           <option value="0">All alarms</option>
-          {{range .Defs}}<option value="{{.ID}}" {{if eq .ID $.AlarmID}}selected{{end}}>{{.PLCName}} / {{.PVName}} {{.AlarmType}}</option>{{end}}
+          {{range .Defs}}<option value="{{.ID}}" {{if eq .ID $.AlarmID}}selected{{end}}>{{.PLCName}} / {{.PVName}} {{.AlarmType}}{{if .PVArchived}} (PV deleted){{end}}</option>{{end}}
         </select>
       </label>
       <label>Priority

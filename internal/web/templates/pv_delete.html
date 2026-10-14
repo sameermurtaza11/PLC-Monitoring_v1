@@ -1,0 +1,39 @@
+{{define "pv_delete.html"}}{{$i := .Impact}}
+<form hx-post="/config/pvs/{{$i.PVID}}/delete" hx-target="#form-body" class="cfg-form delete-form" data-title="Delete PV">
+  {{if .Problem}}<div class="msg error" role="alert">{{.Problem}}</div>{{end}}
+
+  <div class="delete-warning" role="alert">
+    <strong>Delete PV {{$i.PVName}} ({{$i.PLCName}})?</strong>
+    <p>Deleting this PV <strong>also deletes its alarm configurations</strong>
+      ({{$i.AlarmDefs}} configured{{if $i.AlarmDefs}}, {{$i.EnabledAlarm}} in service{{end}}).</p>
+  </div>
+
+  <dl class="meta">
+    <dt>Alarm configurations</dt><dd>{{$i.AlarmDefs}}</dd>
+    <dt>Outstanding alarms</dt><dd>{{$i.Outstanding}}</dd>
+    <dt>Alarm history events</dt><dd>{{$i.AlarmEvents}}</dd>
+    <dt>Stored values</dt><dd>{{$i.ValueHistory}}</dd>
+  </dl>
+
+  <ul class="delete-effects">
+    <li>Acquisition of this PV stops and it disappears from the Dashboard.</li>
+    <li>Alarms that are active now are ended and recorded as "taken out of service"; any that still need an acknowledgement stay on the alarm list until acknowledged.</li>
+    <li><strong>Alarm history and the audit trail are never erased.</strong>
+      {{if $.Archives}}This PV has records that must be kept, so it will be <strong>archived</strong> instead of erased: hidden from the configuration and switched off, with its name and register free to use again.
+      {{else}}Nothing else refers to this PV, so it will be erased completely.{{end}}</li>
+  </ul>
+
+  {{if gt $i.ValueHistory 0}}
+  <label class="check"><input type="checkbox" name="delete_history">
+    Also delete the {{$i.ValueHistory}} stored value(s) of this PV{{if not $.ArchivesEvenWithoutValues}} (then nothing is left to keep and the PV is erased completely){{end}}</label>
+  {{end}}
+
+  <label class="check confirm-box"><input type="checkbox" name="confirm" value="yes" required>
+    I understand and want to delete this PV and its alarm configurations</label>
+
+  <div class="form-actions">
+    <button type="button" onclick="document.getElementById('form-modal').close()">Cancel</button>
+    <button type="submit" class="danger">Delete PV</button>
+  </div>
+</form>
+{{end}}

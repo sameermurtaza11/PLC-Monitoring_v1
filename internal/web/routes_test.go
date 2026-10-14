@@ -77,7 +77,7 @@ func TestLoginPageHasTheThreeFieldsAndNoPrefilledCredentials(t *testing.T) {
 func TestStateChangingRequestsAreRefusedWithoutALogin(t *testing.T) {
 	r := newTestRouter()
 	for _, c := range []struct{ method, path string }{
-		{"POST", "/config/plcs"}, {"POST", "/config/pvs/3"}, {"DELETE", "/config/pvs/3"},
+		{"POST", "/config/plcs"}, {"POST", "/config/pvs/3"}, {"POST", "/config/pvs/3/delete"},
 		{"POST", "/config/users"}, {"DELETE", "/config/users/2"}, {"POST", "/logout"},
 	} {
 		w := httptest.NewRecorder()

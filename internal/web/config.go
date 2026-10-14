@@ -13,7 +13,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 
-	"PLC_Monitoring/internal/plc"
 	"PLC_Monitoring/internal/store"
 )
 
@@ -36,6 +35,9 @@ type form struct {
 	Values map[string]string // field name → typed value
 	Errors fieldErrors
 	PLCs   []store.PLCRecord // for the PV form's PLC select
+
+	Defs    map[string]store.AlarmDef // stored alarms of the PV by type (PV form)
+	IsAdmin bool                      // may approve alarms in the PV form
 }
 
 func (f form) V(name string) string     { return f.Values[name] }
@@ -157,116 +159,6 @@ func (s *Server) pvList(c *gin.Context) {
 		return
 	}
 	c.HTML(http.StatusOK, "pv_config_rows.html", pvs)
-}
-
-func (s *Server) pvForm(c *gin.Context) {
-	f := form{Values: map[string]string{
-		"pv_min": "0", "pv_max": "100", "deadband": "0", "enabled": "on",
-		"state0_text": "OFF", "state1_text": "ON",
-		"plc_id": c.Query("plc"),
-	}}
-	if idStr := c.Param("id"); idStr != "" {
-		id, _ := strconv.Atoi(idStr)
-		r, err := s.store.GetPV(c.Request.Context(), id)
-		if err != nil {
-			c.String(http.StatusNotFound, "PV not found")
-			return
-		}
-		f.ID = r.ID
-		f.Values = map[string]string{
-			"plc_id": strconv.Itoa(r.PLCID), "register_address": strconv.Itoa(r.RegisterAddress),
-			"pv_name": r.Name, "system_name": r.SystemName, "equipment": r.Equipment,
-			"description": r.Description, "unit": r.Unit,
-			"pv_min": ftoa(r.Min), "pv_max": ftoa(r.Max),
-			"deadband": ftoa(r.Deadband), "enabled": onOff(r.Enabled),
-			"state0_text": r.State0Text, "state1_text": r.State1Text,
-		}
-	}
-	s.renderPVForm(c, f)
-}
-
-func (s *Server) renderPVForm(c *gin.Context, f form) {
-	plcs, err := s.store.ListPLCs(c.Request.Context())
-	if err != nil {
-		log.Printf("web: list plcs: %v", err)
-	}
-	f.PLCs = plcs
-	c.HTML(http.StatusOK, "pv_form.html", f)
-}
-
-func (s *Server) pvSave(c *gin.Context) {
-	f := readForm(c, "plc_id", "register_address", "pv_name", "system_name", "equipment",
-		"description", "unit", "pv_min", "pv_max", "deadband", "enabled",
-		"state0_text", "state1_text")
-	f.ID, _ = strconv.Atoi(c.Param("id"))
-
-	r := store.PVRecord{Enabled: f.Checked("enabled")}
-	r.ID = f.ID
-	r.PLCID = intField(f, "plc_id", 1, 1<<31-1)
-	if _, ok := f.Errors["plc_id"]; ok {
-		f.Errors["plc_id"] = "Select a PLC"
-	}
-	r.RegisterAddress = intField(f, "register_address", 0, 1<<31-1)
-	if _, ok := f.Errors["register_address"]; !ok {
-		if _, _, err := plc.ParseAddress(r.RegisterAddress); err != nil {
-			f.Errors["register_address"] = "Use 10001–19999 (digital input), 30001–39999 (input register) or 40001–49999 (holding register)"
-		}
-	}
-	r.Name = requiredText(f, "pv_name", 64)
-	r.SystemName, r.Equipment, r.Description, r.Unit =
-		f.V("system_name"), f.V("equipment"), f.V("description"), f.V("unit")
-	if r.IsDigital() {
-		// Digital input: value is 0/1. Scaling is fixed to 0…1 so trends and
-		// "% of range" comparisons work; analog-only fields are cleared.
-		r.Min, r.Max, r.Deadband, r.Unit = 0, 1, 0, ""
-		r.State0Text = requiredText(f, "state0_text", 32)
-		r.State1Text = requiredText(f, "state1_text", 32)
-	} else {
-		r.State0Text, r.State1Text = "OFF", "ON"
-		r.Min = floatField(f, "pv_min")
-		r.Max = floatField(f, "pv_max")
-		if f.Errors["pv_min"] == "" && f.Errors["pv_max"] == "" && r.Max <= r.Min {
-			f.Errors["pv_max"] = "PV max must be greater than PV min"
-		}
-		r.Deadband = floatField(f, "deadband")
-		if f.Errors["deadband"] == "" && r.Deadband < 0 {
-			f.Errors["deadband"] = "Deadband cannot be negative"
-		}
-	}
-
-	if len(f.Errors) == 0 {
-		_, err := s.store.SavePV(c.Request.Context(), r)
-		if err == nil {
-			s.saved(c, "PV "+r.Name+" saved")
-			return
-		}
-		if !mapConstraint(err, f.Errors) {
-			log.Printf("web: save pv: %v", err)
-			f.Errors["_"] = "Could not save: " + err.Error()
-		}
-	}
-	s.renderPVForm(c, f)
-}
-
-func (s *Server) pvDelete(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	withHistory := c.Query("with_history") == "1"
-
-	err := s.store.DeletePV(c.Request.Context(), id, withHistory)
-	switch {
-	case errors.Is(err, store.ErrInUse):
-		n, _ := s.store.HistoryCount(c.Request.Context(), id)
-		c.HTML(http.StatusOK, "pv_delete_blocked.html", gin.H{"ID": id, "Count": n})
-	case errors.Is(err, pgx.ErrNoRows):
-		s.message(c, "error", "PV not found (already deleted?).")
-	case err != nil:
-		log.Printf("web: delete pv %d: %v", id, err)
-		s.message(c, "error", "Delete failed: "+err.Error())
-	default:
-		s.onConfigChange()
-		c.Header("HX-Trigger", "configSaved")
-		s.message(c, "ok", "PV deleted.")
-	}
 }
 
 // ---------------------------------------------------------------------

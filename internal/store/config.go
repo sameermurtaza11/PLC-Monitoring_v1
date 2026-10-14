@@ -65,7 +65,7 @@ func (s *Store) ListPLCs(ctx context.Context) ([]PLCRecord, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT p.plc_id, p.plc_name, host(p.ip_address), p.port, p.unit_id,
 		       p.scan_interval_ms, p.timeout_ms, p.enabled, p.description,
-		       (SELECT count(*) FROM pv_metadata pv WHERE pv.plc_id = p.plc_id)
+		       (SELECT count(*) FROM pv_metadata pv WHERE pv.plc_id = p.plc_id AND pv.deleted_at IS NULL)
 		FROM plc_metadata p
 		ORDER BY p.plc_name`)
 	if err != nil {
@@ -142,6 +142,9 @@ const pvRecordSelect = `
 	FROM pv_metadata pv
 	JOIN plc_metadata p ON p.plc_id = pv.plc_id`
 
+// Archived PVs (deleted, records kept for the history) are not part of the configuration.
+const pvActive = ` pv.deleted_at IS NULL`
+
 func scanPVRecord(r pgx.Row, rec *PVRecord) error {
 	return scanPV(r, &rec.PV, &rec.PLCName, &rec.Enabled)
 }
@@ -149,7 +152,7 @@ func scanPVRecord(r pgx.Row, rec *PVRecord) error {
 // ListPVs returns all PVs (enabled or not); plcID = 0 means all PLCs.
 func (s *Store) ListPVs(ctx context.Context, plcID int) ([]PVRecord, error) {
 	rows, err := s.pool.Query(ctx, pvRecordSelect+`
-		WHERE $1 = 0 OR pv.plc_id = $1
+		WHERE`+pvActive+` AND ($1 = 0 OR pv.plc_id = $1)
 		ORDER BY p.plc_name, pv.register_address`, plcID)
 	if err != nil {
 		return nil, err
@@ -163,37 +166,46 @@ func (s *Store) ListPVs(ctx context.Context, plcID int) ([]PVRecord, error) {
 
 func (s *Store) GetPV(ctx context.Context, id int) (PVRecord, error) {
 	var rec PVRecord
-	err := scanPVRecord(s.pool.QueryRow(ctx, pvRecordSelect+` WHERE pv.pv_id = $1`, id), &rec)
+	err := scanPVRecord(s.pool.QueryRow(ctx, pvRecordSelect+` WHERE pv.pv_id = $1 AND`+pvActive, id), &rec)
 	return rec, err
 }
 
 // SavePV inserts (ID == 0) or updates a PV. Returns the pv_id.
 func (s *Store) SavePV(ctx context.Context, r PVRecord) (int, error) {
+	var id int
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var e error
+		id, e = savePVTx(ctx, tx, r)
+		return e
+	})
+	return id, asConstraintError(err)
+}
+
+// savePVTx writes the pv_metadata row inside the caller's transaction.
+func savePVTx(ctx context.Context, tx pgx.Tx, r PVRecord) (int, error) {
 	args := []any{r.PLCID, r.RegisterAddress, r.Name, r.SystemName, r.Equipment,
 		r.Description, r.Unit, r.Min, r.Max,
 		r.Deadband, r.Enabled, r.State0Text, r.State1Text}
-	var err error
 	if r.ID == 0 {
-		err = s.pool.QueryRow(ctx, `
+		err := tx.QueryRow(ctx, `
 			INSERT INTO pv_metadata
 				(plc_id, register_address, pv_name, system_name, equipment, description,
 				 unit, pv_min, pv_max, deadband, enabled, state0_text, state1_text)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 			RETURNING pv_id`, args...).Scan(&r.ID)
-	} else {
-		var tag pgconn.CommandTag
-		tag, err = s.pool.Exec(ctx, `
-			UPDATE pv_metadata SET
-				plc_id = $1, register_address = $2, pv_name = $3, system_name = $4,
-				equipment = $5, description = $6, unit = $7, pv_min = $8, pv_max = $9,
-				deadband = $10, enabled = $11, state0_text = $12, state1_text = $13,
-				updated_at = now()
-			WHERE pv_id = $14`, append(args, r.ID)...)
-		if err == nil && tag.RowsAffected() == 0 {
-			err = pgx.ErrNoRows
-		}
+		return r.ID, err
 	}
-	return r.ID, asConstraintError(err)
+	tag, err := tx.Exec(ctx, `
+		UPDATE pv_metadata SET
+			plc_id = $1, register_address = $2, pv_name = $3, system_name = $4,
+			equipment = $5, description = $6, unit = $7, pv_min = $8, pv_max = $9,
+			deadband = $10, enabled = $11, state0_text = $12, state1_text = $13,
+			updated_at = now()
+		WHERE pv_id = $14 AND deleted_at IS NULL`, append(args, r.ID)...)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = pgx.ErrNoRows
+	}
+	return r.ID, err
 }
 
 // HistoryCount returns how many history rows a PV has.
@@ -201,27 +213,4 @@ func (s *Store) HistoryCount(ctx context.Context, pvID int) (int, error) {
 	var n int
 	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM pv_history WHERE pv_id = $1`, pvID).Scan(&n)
 	return n, err
-}
-
-// DeletePV removes a PV. If it has history, ErrInUse is returned unless
-// withHistory is true — then history and PV are deleted in one transaction.
-func (s *Store) DeletePV(ctx context.Context, id int, withHistory bool) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if withHistory {
-			if _, err := tx.Exec(ctx, `DELETE FROM pv_history WHERE pv_id = $1`, id); err != nil {
-				return err
-			}
-		}
-		tag, err := tx.Exec(ctx, `DELETE FROM pv_metadata WHERE pv_id = $1`, id)
-		if ce := asConstraintError(err); ce != err {
-			return fmt.Errorf("%w: PV has history", ErrInUse)
-		}
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() == 0 {
-			return pgx.ErrNoRows
-		}
-		return nil
-	})
 }

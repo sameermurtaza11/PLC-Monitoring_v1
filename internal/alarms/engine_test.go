@@ -3,6 +3,7 @@ package alarms
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -38,6 +39,7 @@ type engineRepo struct {
 	lock     *engineLock
 	nextOcc  int64
 	expired  int
+	ended    []string // "alarmID:reason" of TakeOutOfService calls
 }
 
 func newEngineRepo(defs ...store.AlarmDef) *engineRepo {
@@ -83,6 +85,12 @@ func (r *engineRepo) ReturnToNormal(_ context.Context, occ int64, v float64, ts 
 	return nil
 }
 func (r *engineRepo) ExpireShelves(context.Context, time.Time) (int, error) { return r.expired, nil }
+func (r *engineRepo) TakeOutOfService(_ context.Context, alarmID int64, reason string) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ended = append(r.ended, fmt.Sprintf("%d:%s", alarmID, reason))
+	return 1, nil
+}
 func (r *engineRepo) TryLock(context.Context) (Lock, error) {
 	if !r.lockFree {
 		return nil, nil
@@ -395,5 +403,44 @@ func TestRunConsumesTheBusAndStopsWhenItIsClosed(t *testing.T) {
 	}
 	if got := r.kinds(); len(got) != 1 {
 		t.Fatalf("calls = %v, want one ACTIVATE", got)
+	}
+}
+
+// An alarm that stops being evaluated (disabled, draft again, its PV deleted)
+// while it still has an abnormal occurrence must not leave that occurrence
+// active forever: the engine ends it.
+func TestOccurrencesOfAnAlarmThatLeftServiceAreEnded(t *testing.T) {
+	disabled := hi(1, 80, 0, 0, 0)
+	disabled.Enabled = false
+	draft := hi(2, 80, 0, 0, 0)
+	draft.RationalizationStatus = store.RationDraft
+	archived := hi(3, 80, 0, 0, 0)
+	archived.PVArchived, archived.Enabled = true, false
+	quiet := hi(4, 80, 0, 0, 0)
+	quiet.Enabled = false // out of service but nothing abnormal: nothing to end
+	inService := hi(5, 80, 0, 0, 0)
+
+	r := newEngineRepo(disabled, draft, archived, quiet, inService)
+	r.occs = []store.Occurrence{
+		{ID: 1, AlarmID: 1, State: store.StateUnack, ProcessConditionActive: true},
+		{ID: 2, AlarmID: 2, State: store.StateAcked, ProcessConditionActive: true},
+		{ID: 3, AlarmID: 3, State: store.StateUnack, ProcessConditionActive: true},
+		{ID: 4, AlarmID: 4, State: store.StateRTNUN, ProcessConditionActive: false},
+		{ID: 5, AlarmID: 5, State: store.StateUnack, ProcessConditionActive: true},
+	}
+	var changes int
+	m := New(r, nil, Options{Logf: func(string, ...any) {}, OnChange: func() { changes++ }})
+	m.ensureLock()
+	want := []string{"1:the alarm was disabled", "2:its approval was withdrawn", "3:its PV was deleted"}
+	if len(r.ended) != len(want) {
+		t.Fatalf("ended = %v, want %v", r.ended, want)
+	}
+	for i := range want {
+		if r.ended[i] != want[i] {
+			t.Errorf("ended[%d] = %q, want %q", i, r.ended[i], want[i])
+		}
+	}
+	if m.Stats().OutOfService != 3 || changes != 3 {
+		t.Errorf("stats %+v, list changes %d", m.Stats(), changes)
 	}
 }

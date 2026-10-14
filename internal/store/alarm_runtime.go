@@ -157,43 +157,85 @@ func (s *Store) ActivateAlarm(ctx context.Context, a AlarmDef, value float64, ts
 // shelved with the condition marked normal.
 func (s *Store) ReturnToNormal(ctx context.Context, occID int64, value float64, ts time.Time) error {
 	return asConstraintError(pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		o, a, err := lockOccurrence(ctx, tx, occID)
-		if err != nil {
-			return err
-		}
-		h := historyRow{occ: occID, alarm: a, event: "RETURNED_TO_NORMAL", prev: &o.State, value: &value, ts: ts,
-			details: fmt.Sprintf("value %g", value)}
-		switch o.State {
-		case StateUnack:
-			h.next = str(StateRTNUN)
-			if err := insertHistory(ctx, tx, h); err != nil {
-				return err
-			}
-			_, err = tx.Exec(ctx, `
-				UPDATE active_alarms SET alarm_state = 'RTNUN', process_condition_active = FALSE,
-					returned_to_normal_at = $2, updated_at = now() WHERE occurrence_id = $1`, occID, ts)
-			return err
-		case StateAcked:
-			h.next = str(StateNorm)
-			if err := insertHistory(ctx, tx, h); err != nil {
-				return err
-			}
-			_, err = tx.Exec(ctx, `DELETE FROM active_alarms WHERE occurrence_id = $1`, occID)
-			return err
-		case StateShlvd:
-			if !o.ProcessConditionActive {
-				return nil
-			}
-			if err := insertHistory(ctx, tx, h); err != nil { // new_state NULL: informational
-				return err
-			}
-			_, err = tx.Exec(ctx, `
-				UPDATE active_alarms SET process_condition_active = FALSE, returned_to_normal_at = $2, updated_at = now()
-				WHERE occurrence_id = $1`, occID, ts)
-			return err
-		}
-		return nil // RTNUN: already returned
+		return returnToNormalTx(ctx, tx, occID, &value, ts, fmt.Sprintf("value %g", value), Actor{})
 	}))
+}
+
+// returnToNormalTx is the transition behind ReturnToNormal. `by` is empty for
+// the automatic return and names the user when a configuration change ends the
+// condition (alarm taken out of service).
+func returnToNormalTx(ctx context.Context, tx pgx.Tx, occID int64, value *float64, ts time.Time, details string, by Actor) error {
+	o, a, err := lockOccurrence(ctx, tx, occID)
+	if err != nil {
+		return err
+	}
+	h := historyRow{occ: occID, alarm: a, event: "RETURNED_TO_NORMAL", prev: &o.State, value: value, ts: ts,
+		details: details, userID: actorID(by), userName: by.Username}
+	switch o.State {
+	case StateUnack:
+		h.next = str(StateRTNUN)
+		if err := insertHistory(ctx, tx, h); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `
+			UPDATE active_alarms SET alarm_state = 'RTNUN', process_condition_active = FALSE,
+				returned_to_normal_at = $2, updated_at = now() WHERE occurrence_id = $1`, occID, ts)
+		return err
+	case StateAcked:
+		h.next = str(StateNorm)
+		if err := insertHistory(ctx, tx, h); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `DELETE FROM active_alarms WHERE occurrence_id = $1`, occID)
+		return err
+	case StateShlvd:
+		if !o.ProcessConditionActive {
+			return nil
+		}
+		if err := insertHistory(ctx, tx, h); err != nil { // new_state NULL: informational
+			return err
+		}
+		_, err = tx.Exec(ctx, `
+			UPDATE active_alarms SET process_condition_active = FALSE, returned_to_normal_at = $2, updated_at = now()
+			WHERE occurrence_id = $1`, occID, ts)
+		return err
+	}
+	return nil // RTNUN: already returned
+}
+
+// takeOutOfServiceTx ends every abnormal occurrence of an alarm that is no
+// longer in service (disabled, its PV removed or its approval withdrawn): the
+// condition is recorded as returned to normal, with the reason in the history.
+// Unacknowledged occurrences stay on the list as RTNUN until someone
+// acknowledges them, so nothing disappears unseen. Returns how many were ended.
+func takeOutOfServiceTx(ctx context.Context, tx pgx.Tx, alarmID int64, reason string, by Actor) (int, error) {
+	rows, err := tx.Query(ctx, `SELECT occurrence_id FROM active_alarms WHERE alarm_id = $1 AND process_condition_active FOR UPDATE`, alarmID)
+	if err != nil {
+		return 0, err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		if err := returnToNormalTx(ctx, tx, id, nil, time.Now(), "alarm taken out of service: "+reason, by); err != nil {
+			return 0, err
+		}
+	}
+	return len(ids), nil
+}
+
+// TakeOutOfService is takeOutOfServiceTx in its own transaction; the alarm
+// engine calls it for an alarm that stopped being evaluable while it had an
+// abnormal occurrence.
+func (s *Store) TakeOutOfService(ctx context.Context, alarmID int64, reason string) (int, error) {
+	var n int
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var e error
+		n, e = takeOutOfServiceTx(ctx, tx, alarmID, reason, Actor{})
+		return e
+	})
+	return n, asConstraintError(err)
 }
 
 // Acknowledge: UNACK → ACKED, RTNUN → NORM. Any role may do it.

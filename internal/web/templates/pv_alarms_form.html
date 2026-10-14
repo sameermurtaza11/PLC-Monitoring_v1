@@ -1,0 +1,114 @@
+{{define "pv_alarms_form"}}
+<!-- Alarms of the PV, edited together with it. Stored in alarm_metadata (one definition per PV and type). -->
+<fieldset class="alarms-box">
+  <legend>Alarms</legend>
+  <label class="check toggle"><input type="checkbox" name="alarms_on" id="alarms-on" {{if .Checked "alarms_on"}}checked{{end}}>
+    <strong>Enable Alarms</strong> <span class="hint">for this PV</span></label>
+  {{template "field_error" (fe . "alarms_on")}}
+
+  <div id="alarm-fields" {{if not (.Checked "alarms_on")}}hidden{{end}}>
+    <p class="hint">Each alarm is a separate definition (ISA-18.2): its own limit, priority, deadband and delays. Changing an approved alarm's
+      limit, delays, priority or instructions withdraws its approval until an administrator approves it again.
+      An alarm that is switched off is kept (with its history) and can be switched on again later.</p>
+
+    <!-- Analog input: four independent limits -->
+    <div class="analog-only alarm-set" {{if .Digital}}hidden{{end}}>
+      {{range analogTypes}}{{template "alarm_card" (alarmCard $ .)}}{{end}}
+    </div>
+
+    <!-- Digital input: one discrete alarm -->
+    <div class="digital-only alarm-set" {{if not .Digital}}hidden{{end}}>
+      {{template "alarm_card" (alarmCard . "DISCRETE")}}
+    </div>
+
+    <label class="alarm-reason">Reason for the alarm change (audit trail, optional)
+      <input name="change_reason" value="{{.V "change_reason"}}" maxlength="300"></label>
+    {{if .IsAdmin}}
+    <label class="check"><input type="checkbox" name="approve" {{if .Checked "approve"}}checked{{end}}>
+      Approve these alarms now <span class="hint">(administrators; needs rationale, operator action and consequence of inaction)</span></label>
+    {{end}}
+  </div>
+</fieldset>
+{{end}}
+
+{{define "alarm_card"}}
+<div class="alarm-card" data-type="{{.T}}" data-pct="{{.Pct}}">
+  <div class="alarm-card-head">
+    <label class="check"><input type="checkbox" name="{{.Name "on"}}" class="alarm-on" {{if .On}}checked{{end}}>
+      <strong>{{.Label}}</strong></label>
+    {{$st := .Status}}<span class="badge {{$st.Class}}">{{$st.Text}}</span>
+  </div>
+
+  <div class="alarm-body" {{if not .On}}hidden{{end}}>
+    {{if .Digital}}
+    <div class="grid2">
+      <label>Normal state *
+        <select name="{{.Name "normal"}}" class="alarm-normal">
+          <option value="" {{if .Selected "normal" ""}}selected{{end}}>— select —</option>
+          <option value="0" {{if .Selected "normal" "0"}}selected{{end}}>0</option>
+          <option value="1" {{if .Selected "normal" "1"}}selected{{end}}>1</option>
+        </select>
+        <span class="hint alarm-when"></span>
+        {{with .Err "normal"}}<div class="field-error">{{.}}</div>{{end}}</label>
+    </div>
+    {{else}}
+    <div class="grid3">
+      <label><span>Setpoint <span class="alarm-unit muted"></span> *</span>
+        <input name="{{.Name "setpoint"}}" type="number" step="any" value="{{.V "setpoint"}}" class="alarm-setpoint">
+        <span class="hint">{{if or (eq .T "HIHI") (eq .T "HI")}}alarm when the value rises to or above it{{else}}alarm when the value falls to or below it{{end}}</span>
+        {{with .Err "setpoint"}}<div class="field-error">{{.}}</div>{{end}}</label>
+      <label><span>Deadband <span class="alarm-unit muted"></span> *</span>
+        <input name="{{.Name "deadband"}}" type="number" step="any" min="0" value="{{.V "deadband"}}" class="alarm-deadband">
+        <span class="hint">the alarm clears only after the value has moved this far back</span>
+        {{with .Err "deadband"}}<div class="field-error">{{.}}</div>{{end}}</label>
+      <label>Priority *
+        <select name="{{.Name "priority"}}">{{range .Prio}}<option {{if $.Selected "priority" .}}selected{{end}}>{{.}}</option>{{end}}</select>
+        {{with .Err "priority"}}<div class="field-error">{{.}}</div>{{end}}</label>
+    </div>
+    {{end}}
+
+    <div class="grid3">
+      {{if .Digital}}
+      <label>Priority *
+        <select name="{{.Name "priority"}}">{{range .Prio}}<option {{if $.Selected "priority" .}}selected{{end}}>{{.}}</option>{{end}}</select>
+        {{with .Err "priority"}}<div class="field-error">{{.}}</div>{{end}}</label>
+      {{end}}
+      <label>On-delay (s)
+        <input name="{{.Name "on_delay"}}" type="number" min="0" max="3600" step="1" value="{{.V "on_delay"}}">
+        <span class="hint">condition must last this long to alarm</span>
+        {{with .Err "on_delay"}}<div class="field-error">{{.}}</div>{{end}}</label>
+      <label>Off-delay (s)
+        <input name="{{.Name "off_delay"}}" type="number" min="0" max="3600" step="1" value="{{.V "off_delay"}}">
+        <span class="hint">must be normal this long to clear</span>
+        {{with .Err "off_delay"}}<div class="field-error">{{.}}</div>{{end}}</label>
+      <label>Class
+        <select name="{{.Name "class"}}">{{range .Cls}}<option {{if $.Selected "class" .}}selected{{end}}>{{.}}</option>{{end}}</select>
+        {{with .Err "class"}}<div class="field-error">{{.}}</div>{{end}}</label>
+    </div>
+
+    <label>Alarm message *
+      <input name="{{.Name "message"}}" value="{{.V "message"}}" maxlength="200" class="alarm-message" data-default-label="{{.Label}}">
+      {{with .Err "message"}}<div class="field-error">{{.}}</div>{{end}}</label>
+
+    <details class="alarm-more" {{if or (.Err "rationale") (.Err "action") (.Err "conseq") (.Err "cause") (.Err "max_resp")}}open{{end}}>
+      <summary>Rationalization (operator action, consequence, response time…)</summary>
+      <label>Operator action
+        <textarea name="{{.Name "action"}}" rows="2" maxlength="2000">{{.V "action"}}</textarea>
+        {{with .Err "action"}}<div class="field-error">{{.}}</div>{{end}}</label>
+      <label>Consequence of inaction
+        <textarea name="{{.Name "conseq"}}" rows="2" maxlength="2000">{{.V "conseq"}}</textarea>
+        {{with .Err "conseq"}}<div class="field-error">{{.}}</div>{{end}}</label>
+      <label>Probable cause
+        <textarea name="{{.Name "cause"}}" rows="2" maxlength="2000">{{.V "cause"}}</textarea></label>
+      <div class="grid2">
+        <label>Max. response time (s)
+          <input name="{{.Name "max_resp"}}" type="number" min="1" step="1" value="{{.V "max_resp"}}">
+          {{with .Err "max_resp"}}<div class="field-error">{{.}}</div>{{end}}</label>
+      </div>
+      <label>Rationale (why this priority and class)
+        <textarea name="{{.Name "rationale"}}" rows="2" maxlength="2000">{{.V "rationale"}}</textarea>
+        {{with .Err "rationale"}}<div class="field-error">{{.}}</div>{{end}}</label>
+    </details>
+  </div>
+</div>
+{{end}}

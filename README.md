@@ -176,3 +176,17 @@ go test ./internal/store/ -run Integration -v
   against live data (stored as approved, approver "test-data seed"). Test data only — replace with rationalized alarms.
 - Dashboard status and the PV gauge bands come from the alarm tables; the menu badge on **Alarms** shows how many alarms
   are waiting for an acknowledgement (unacknowledged, or returned to normal but not yet acknowledged).
+
+## PV and alarm configuration in one form
+
+The Configuration page edits a PV and its alarms together (`Add PV` / `Edit`): the PV fields first, then an **Enable Alarms**
+switch. Analog PVs get four independent alarms (HIHI, HI, LO, LOLO), digital PVs one discrete alarm (you choose the *normal* state;
+the other state is the alarm). The data stays in two tables and is written in **one transaction**; a failure in either part changes nothing.
+
+- Editing updates the existing alarm definitions (one per PV and type, never duplicated). Switching an alarm (or all alarms) off keeps the
+  definition and its history; abnormal occurrences are ended and recorded as "taken out of service". The alarm engine also does this for any
+  alarm that stops being evaluated (disabled, approval withdrawn, PV deleted).
+- New and changed alarms are drafts until an administrator approves them (Alarm Configuration, or the "Approve these alarms now" box for administrators).
+- **Delete PV** shows a warning and needs an explicit confirmation. Alarm history, audit records, outstanding alarms and (unless you also delete
+  them) stored values are never erased: a PV with any of these is **archived** (`pv_metadata.deleted_at`, migration `006_pv_archive.sql`) — switched off,
+  hidden, its name and register free again — otherwise it is erased completely together with its alarm configurations.

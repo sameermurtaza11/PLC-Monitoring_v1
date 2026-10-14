@@ -34,7 +34,13 @@ func (s *Server) alarmList(c *gin.Context) {
 		c.String(http.StatusInternalServerError, "database error")
 		return
 	}
-	c.HTML(http.StatusOK, "alarm_rows.html", gin.H{"Alarms": defs, "IsAdmin": auth.FromContext(c).IsAdmin()})
+	active := defs[:0:0]
+	for _, d := range defs {
+		if !d.PVArchived { // alarms of a deleted PV are kept for the history, not configured
+			active = append(active, d)
+		}
+	}
+	c.HTML(http.StatusOK, "alarm_rows.html", gin.H{"Alarms": active, "IsAdmin": auth.FromContext(c).IsAdmin()})
 }
 
 func (s *Server) alarmForm(c *gin.Context) {

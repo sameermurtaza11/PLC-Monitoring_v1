@@ -40,8 +40,7 @@
   <td>{{if .Enabled}}<span class="badge ok">Yes</span>{{else}}<span class="badge none">No</span>{{end}}</td>
   <td class="actions">
     <button type="button" hx-get="/config/pvs/{{.ID}}/edit" hx-target="#form-body">Edit</button>
-    <button type="button" class="danger" hx-delete="/config/pvs/{{.ID}}" hx-target="#config-msg"
-            hx-confirm="Delete PV {{.Name}} on {{.PLCName}}?">Delete</button>
+    <button type="button" class="danger" hx-get="/config/pvs/{{.ID}}/delete" hx-target="#form-body">Delete</button>
   </td>
 </tr>
 {{else}}
@@ -51,15 +50,4 @@
 
 {{define "config_msg.html"}}
 <div class="msg {{.Class}}">{{.Text}}</div>
-{{end}}
-
-{{define "pv_delete_blocked.html"}}
-<div class="msg error">
-  This PV has {{.Count}} history rows, so it was not deleted.
-  Prefer <strong>disabling</strong> it (Edit → untick Enabled) to keep the history.
-  <button type="button" class="danger" hx-delete="/config/pvs/{{.ID}}?with_history=1" hx-target="#config-msg"
-          hx-confirm="Permanently delete this PV AND its {{.Count}} history rows? This cannot be undone.">
-    Delete PV and its history
-  </button>
-</div>
 {{end}}

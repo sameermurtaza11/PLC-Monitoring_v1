@@ -18,6 +18,8 @@ type EngineRepo interface {
 	ActivateAlarm(ctx context.Context, a store.AlarmDef, value float64, ts time.Time) (int64, error)
 	ReturnToNormal(ctx context.Context, occID int64, value float64, ts time.Time) error
 	ExpireShelves(ctx context.Context, now time.Time) (int, error)
+	// TakeOutOfService ends the abnormal occurrences of an alarm that is no longer evaluated.
+	TakeOutOfService(ctx context.Context, alarmID int64, reason string) (int, error)
 	// TryLock takes the single-engine lock; (nil, nil) if another process holds it.
 	TryLock(ctx context.Context) (Lock, error)
 }
@@ -167,6 +169,7 @@ type Stats struct {
 	Activations  uint64
 	Returns      uint64
 	ShelvesEnded uint64
+	OutOfService uint64 // abnormal occurrences ended because their alarm left service
 	DBErrors     uint64
 }
 
@@ -190,6 +193,7 @@ type Module struct {
 	nAlarms                                      atomic.Int64
 	samples, evaluated, unknown, skipped         atomic.Uint64
 	activations, returns, shelvesEnded, dbErrors atomic.Uint64
+	outOfService                                 atomic.Uint64
 }
 
 func New(repo EngineRepo, sub *bus.Subscription, opt Options) *Module {
@@ -209,7 +213,7 @@ func (m *Module) Reload() {
 func (m *Module) Stats() Stats {
 	return Stats{Running: m.running.Load(), Alarms: int(m.nAlarms.Load()), Samples: m.samples.Load(),
 		Evaluated: m.evaluated.Load(), Unknown: m.unknown.Load(), Skipped: m.skipped.Load(),
-		Activations: m.activations.Load(), Returns: m.returns.Load(), ShelvesEnded: m.shelvesEnded.Load(),
+		Activations: m.activations.Load(), Returns: m.returns.Load(), ShelvesEnded: m.shelvesEnded.Load(), OutOfService: m.outOfService.Load(),
 		DBErrors: m.dbErrors.Load()}
 }
 
@@ -330,7 +334,12 @@ func (m *Module) refresh() {
 	byPV := map[int][]*alarmState{}
 	for _, d := range defs {
 		if !d.Evaluable() {
-			continue // draft, disabled or inconsistent: not evaluated
+			// Draft, disabled or inconsistent: not evaluated. An occurrence that is
+			// still abnormal would stay on the list forever, so it is ended here.
+			if occ := abnormal[d.ID]; occ != 0 {
+				m.endOutOfService(d)
+			}
+			continue
 		}
 		st := m.byAlarm[d.ID]
 		if st == nil {
@@ -411,5 +420,31 @@ func (m *Module) expireShelves() {
 		m.shelvesEnded.Add(uint64(n))
 		m.opt.OnChange()
 		m.opt.Logf("alarms: %d shelved alarm(s) returned to the alarm list (shelf time ended)", n)
+	}
+}
+
+// endOutOfService ends the abnormal occurrences of an alarm that is no longer
+// evaluated (see refresh). Failures are retried at the next refresh.
+func (m *Module) endOutOfService(d store.AlarmDef) {
+	ctx, cancel := m.ctx()
+	defer cancel()
+	why := "the alarm is no longer in service"
+	switch {
+	case d.PVArchived:
+		why = "its PV was deleted"
+	case !d.Enabled:
+		why = "the alarm was disabled"
+	case d.RationalizationStatus != store.RationApproved:
+		why = "its approval was withdrawn"
+	}
+	n, err := m.repo.TakeOutOfService(ctx, d.ID, why)
+	if err != nil {
+		m.logError("ending alarm "+d.Message+" that left service", err)
+		return
+	}
+	if n > 0 {
+		m.outOfService.Add(uint64(n))
+		m.opt.Logf("alarms: %d occurrence(s) of %q ended: %s", n, d.Message, why)
+		m.opt.OnChange()
 	}
 }
