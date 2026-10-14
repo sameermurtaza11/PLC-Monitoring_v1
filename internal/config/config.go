@@ -22,6 +22,10 @@ type Config struct {
 	CookieSecure   bool          // COOKIE_SECURE   — "true" for HTTPS deployments (default false: local HTTP works)
 	CookieSameSite string        // COOKIE_SAMESITE — "lax" (default) or "strict"
 	SessionHours   time.Duration // SESSION_HOURS   — how long a login lasts (default 12)
+
+	// Longest time an alarm may be shelved, e.g. "8h" or "72h". Empty = no site
+	// limit (the user always chooses a finite time themselves). A site decision.
+	MaxShelve time.Duration // ALARM_MAX_SHELVE
 }
 
 func Load() Config {
@@ -37,6 +41,7 @@ func Load() Config {
 		CookieSecure:   strings.EqualFold(env("COOKIE_SECURE", "false"), "true"),
 		CookieSameSite: strings.ToLower(env("COOKIE_SAMESITE", "lax")),
 		SessionHours:   time.Duration(envInt("SESSION_HOURS", 12)) * time.Hour,
+		MaxShelve:      envDuration("ALARM_MAX_SHELVE", 0),
 	}
 }
 

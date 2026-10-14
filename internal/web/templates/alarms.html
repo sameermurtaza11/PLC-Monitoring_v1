@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Alarms · PLC Monitoring</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js"></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body hx-headers='{"X-CSRF-Token": "{{.CSRF}}"}'>
+  {{template "nav" .}}
+
+  <main>
+    <p class="live-line">
+      <span id="live-state" class="badge none">connecting…</span>
+      <span id="live-summary">{{template "alarm_summary.html" .Counts}}</span>
+    </p>
+    <!-- Result of Acknowledge / Shelve / Unshelve lands here -->
+    <div id="alarm-msg" aria-live="polite"></div>
+
+    <table class="pv-table">
+      <thead>
+        <tr>
+          <th>Priority</th>
+          <th>State</th>
+          <th>Activated</th>
+          <th>PLC</th>
+          <th>PV Name</th>
+          <th>Alarm</th>
+          <th>Condition</th>
+          <th class="num">Value at activation</th>
+          <th class="num">Current value</th>
+          <th></th>
+        </tr>
+      </thead>
+      <!-- HTMX loads the initial rows once; app.js then keeps them current from the pushed /events stream. -->
+      <tbody id="live-rows" data-stream="/events?view=alarms" hx-get="/partials/alarm-rows" hx-trigger="load" hx-swap="innerHTML">
+        <tr><td colspan="10" class="muted">Loading…</td></tr>
+      </tbody>
+    </table>
+  </main>
+
+  <!-- Alarm detail modal. "More" loads /alarm/{occurrence} into #alarm-detail, then opens it. -->
+  <dialog id="alarm-modal">
+    <div class="modal-head">
+      <strong>Alarm Detail</strong>
+      <button type="button" onclick="document.getElementById('alarm-modal').close()" aria-label="Close">✕</button>
+    </div>
+    <div id="alarm-detail"></div>
+  </dialog>
+</body>
+</html>
+
+{{define "alarm_summary.html"}}
+<span class="count bad">Unacknowledged <strong>{{.Unack}}</strong></span>
+<span class="count warn">Returned to normal, unacknowledged <strong>{{.Returned}}</strong></span>
+<span class="count info">Acknowledged <strong>{{.Acked}}</strong></span>
+<span class="count none">Shelved <strong>{{.Shelved}}</strong></span>
+{{end}}
+
+{{define "alarm_mgmt_rows.html"}}
+{{range .}}{{$d := .E.Def}}{{$o := .E.Occ}}
+<tr class="al-{{$o.State}}">
+  <td><span class="badge {{priorityClass $d.Priority}}">{{$d.Priority}}</span></td>
+  <td>
+    <span class="badge {{stateClass $o.State}}{{if eq $o.State "UNACK"}} flash{{end}}">{{stateLabel $o.State}}</span>
+    {{if eq $o.State "SHLVD"}}<div class="muted small">until {{time $o.ShelvedExpiry}}</div>{{end}}
+  </td>
+  <td class="muted">{{ts $o.ActivatedAt}}</td>
+  <td>{{$d.PLCName}}</td>
+  <td>{{$d.PVName}}</td>
+  <td class="strong">{{$d.Message}}</td>
+  <td><span class="tag">{{$d.AlarmType}}</span> {{$d.Trigger}}</td>
+  <td class="num">{{alarmValue $d $o.PVValue}}</td>
+  <td class="num">{{liveValue $d .Live}}</td>
+  <td class="actions">
+    {{if canAck $o.State}}<button type="button" class="primary" hx-post="/alarm/{{$o.ID}}/ack" hx-swap="none">Acknowledge</button>{{end}}
+    <button type="button" hx-get="/alarm/{{$o.ID}}" hx-target="#alarm-detail" hx-swap="innerHTML">More</button>
+  </td>
+</tr>
+{{else}}
+<tr><td colspan="10" class="muted">No outstanding alarms.</td></tr>
+{{end}}
+{{end}}

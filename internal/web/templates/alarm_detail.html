@@ -1,0 +1,140 @@
+{{define "alarm_detail.html"}}{{$d := .Def}}
+<div class="detail alarm-detail" data-occ-id="{{.Occ.ID}}">
+  <h2>{{$d.PVName}} <span class="muted">· {{$d.PLCName}} · {{$d.AlarmType}}</span></h2>
+  <p class="al-message">
+    <strong>{{$d.Message}}</strong>
+    <span class="badge {{priorityClass $d.Priority}}">{{$d.Priority}}</span>
+    <span class="tag">{{$d.AlarmClass}}</span>
+  </p>
+
+  <div id="alarm-actions">{{template "alarm_actions.html" .}}</div>
+
+  <div id="alarm-dyn">{{template "alarm_dyn.html" .}}</div>
+
+  <div class="detail-top alarm-defs">
+    <section>
+      <h3>Alarm definition</h3>
+      <dl class="meta">
+        <dt>Alarm</dt><dd>#{{$d.ID}} · occurrence #{{.Occ.ID}}</dd>
+        <dt>Process variable</dt><dd>{{$d.PLCName}} / {{$d.PVName}}{{if $d.PVUnit}} ({{$d.PVUnit}}){{end}}</dd>
+        <dt>Type</dt><dd><span class="tag">{{$d.AlarmType}}</span></dd>
+        <dt>Trip condition</dt><dd>{{$d.Trigger}}</dd>
+        {{if not $d.Digital}}
+        <dt>Deadband</dt><dd>{{f $d.Deadband}} {{$d.PVUnit}}</dd>
+        {{end}}
+        <dt>On-delay</dt><dd>{{$d.OnDelayS}} s (condition must persist before activation)</dd>
+        <dt>Off-delay</dt><dd>{{$d.OffDelayS}} s (condition must stay normal before clearing)</dd>
+        <dt>Message</dt><dd>{{$d.Message}}</dd>
+      </dl>
+    </section>
+    <section>
+      <h3>Rationalization</h3>
+      <dl class="meta">
+        <dt>Priority</dt><dd><span class="badge {{priorityClass $d.Priority}}">{{$d.Priority}}</span></dd>
+        <dt>Class</dt><dd>{{$d.AlarmClass}}</dd>
+        <dt>Operator action</dt><dd class="wrap">{{orDash $d.OperatorAction}}</dd>
+        <dt>Consequence of inaction</dt><dd class="wrap">{{orDash $d.ConsequencesOfInaction}}</dd>
+        <dt>Probable cause</dt><dd class="wrap">{{orDash $d.ProbableCause}}</dd>
+        <dt>Max. response time</dt><dd>{{if $d.MaxResponseTimeS}}{{$d.MaxResponseTimeS | int}} s{{else}}—{{end}}</dd>
+        <dt>Rationale</dt><dd class="wrap">{{orDash $d.Rationale}}</dd>
+        <dt>Approval</dt><dd>{{if eq $d.RationalizationStatus "APPROVED"}}Approved by {{$d.ApprovedByName}}, {{time $d.ApprovedAt}}{{else}}<span class="badge warn">Draft</span>{{end}}</dd>
+        <dt>Last changed</dt><dd>{{ts $d.UpdatedAt}}{{if $d.UpdatedByName}} by {{$d.UpdatedByName}}{{end}}</dd>
+      </dl>
+    </section>
+  </div>
+</div>
+{{end}}
+
+{{define "alarm_actions.html"}}
+{{if .Gone}}
+<p class="muted">This alarm has completed: the condition returned to normal and it was acknowledged. The record below stays in the alarm history.</p>
+{{else}}
+<div class="al-actions">
+  {{if canAck .Occ.State}}
+  <button type="button" class="primary" hx-post="/alarm/{{.Occ.ID}}/ack" hx-swap="none">Acknowledge</button>
+  {{end}}
+
+  {{if inState .Occ.State "SHLVD"}}
+    {{if .CanShelve}}
+    <button type="button" hx-post="/alarm/{{.Occ.ID}}/unshelve" hx-swap="none"
+            hx-confirm="Return this alarm to the alarm list now? It will need to be acknowledged.">Unshelve</button>
+    {{else}}<span class="muted">Unshelving requires a supervisor or administrator.</span>{{end}}
+  {{else if .CanShelve}}
+  <details class="shelve">
+    <summary>Shelve…</summary>
+    <form hx-post="/alarm/{{.Occ.ID}}/shelve" hx-swap="none" class="cfg-form">
+      <p class="hint">Shelving suppresses this alarm temporarily. The process condition is still tracked and recorded, and the
+        alarm returns to the list automatically when the time ends. You choose how long.</p>
+      <label>Reason (required)
+        <input name="reason" required maxlength="500" placeholder="e.g. instrument under repair, work order 1234">
+      </label>
+      <div class="grid2">
+        <label>Shelve for
+          <input name="amount" type="number" min="1" step="1" required>
+        </label>
+        <label>Unit
+          <select name="unit" required>
+            <option value="" selected disabled>Select…</option>
+            <option value="minutes">minutes</option>
+            <option value="hours">hours</option>
+            <option value="days">days</option>
+          </select>
+        </label>
+      </div>
+      {{if .MaxShelve}}<p class="hint">Site limit: {{.MaxShelve}}.</p>{{end}}
+      <div class="form-actions"><button type="submit" class="primary">Shelve alarm</button></div>
+    </form>
+  </details>
+  {{else}}
+  <span class="muted">Shelving requires a supervisor or administrator.</span>
+  {{end}}
+</div>
+{{end}}
+{{end}}
+
+{{define "alarm_dyn.html"}}{{$d := .Def}}{{$o := .Occ}}
+<h3>Status</h3>
+<dl class="meta">
+  {{if .Gone}}
+  <dt>State</dt><dd><span class="badge ok">Completed (normal, acknowledged)</span></dd>
+  {{else}}
+  <dt>State</dt>
+  <dd><span class="badge {{stateClass $o.State}}">{{stateLabel $o.State}}</span>
+    {{if eq $o.State "SHLVD"}}
+      until {{time $o.ShelvedExpiry}} · by {{$o.ShelvedByName}}<br><span class="muted">Reason: {{$o.ShelveReason}}</span>
+    {{end}}</dd>
+  <dt>Process condition</dt>
+  <dd>{{if $o.ProcessConditionActive}}<span class="badge bad">Abnormal</span>{{else}}<span class="badge ok">Normal</span>{{end}}</dd>
+  {{end}}
+  <dt>Current value</dt><dd>{{liveValue $d .Live}}</dd>
+  <dt>Value at activation</dt><dd>{{alarmValue $d $o.PVValue}}</dd>
+  {{if not .Gone}}
+  <dt>Activated</dt><dd>{{ts $o.ActivatedAt}} <span class="muted">({{since $o.ActivatedAt}} ago)</span></dd>
+  <dt>Acknowledged</dt><dd>{{if $o.AckedAt}}{{time $o.AckedAt}} by {{$o.AckedByName}}{{else}}not yet{{end}}</dd>
+  <dt>Returned to normal</dt><dd>{{if $o.ReturnedToNormal}}{{time $o.ReturnedToNormal}}{{else}}—{{end}}</dd>
+  {{$r := respLine $d $o}}
+  <dt>Operator response</dt><dd><span class="badge {{$r.Class}}">{{$r.Text}}</span></dd>
+  {{end}}
+</dl>
+
+<h3>Event history of this occurrence</h3>
+<div class="table-scroll">
+<table class="pv-table small-table">
+  <thead><tr><th>Time</th><th>Event</th><th>State change</th><th class="num">Value</th><th>User</th><th>Details</th></tr></thead>
+  <tbody>
+  {{range .Events}}
+  <tr>
+    <td class="muted">{{ts .TS}}</td>
+    <td>{{eventLabel .Event}}</td>
+    <td>{{if .Prev}}{{.Prev}}{{else}}—{{end}} → {{if .Next}}{{.Next}}{{else}}(no change){{end}}</td>
+    <td class="num">{{eventValue .}}</td>
+    <td>{{if .UserName}}{{.UserName}}{{else}}<span class="muted">automatic</span>{{end}}</td>
+    <td class="wrap">{{.Details}}{{if .Reason}}{{if .Details}} · {{end}}Reason: {{.Reason}}{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="6" class="muted">No events recorded.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{end}}

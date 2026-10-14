@@ -197,7 +197,9 @@ func (s *Store) ReturnToNormal(ctx context.Context, occID int64, value float64, 
 }
 
 // Acknowledge: UNACK → ACKED, RTNUN → NORM. Any role may do it.
-func (s *Store) Acknowledge(ctx context.Context, occID int64, actor Actor) error {
+// valueNow is the process value at the time of the action (nil if unknown):
+// it is what the history records, not the value at activation.
+func (s *Store) Acknowledge(ctx context.Context, occID int64, actor Actor, valueNow *float64) error {
 	return asConstraintError(pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		o, a, err := lockOccurrence(ctx, tx, occID)
 		if err != nil {
@@ -208,7 +210,7 @@ func (s *Store) Acknowledge(ctx context.Context, occID int64, actor Actor) error
 			userID: actorID(actor), userName: actor.Username}
 		switch o.State {
 		case StateUnack:
-			h.next, h.value = str(StateAcked), o.PVValue
+			h.next, h.value = str(StateAcked), valueNow
 			if err := insertHistory(ctx, tx, h); err != nil {
 				return err
 			}
@@ -217,7 +219,7 @@ func (s *Store) Acknowledge(ctx context.Context, occID int64, actor Actor) error
 				WHERE occurrence_id = $1`, occID, now, actorID(actor), actor.Username)
 			return err
 		case StateRTNUN:
-			h.next = str(StateNorm)
+			h.next, h.value = str(StateNorm), valueNow
 			if err := insertHistory(ctx, tx, h); err != nil {
 				return err
 			}
@@ -230,7 +232,7 @@ func (s *Store) Acknowledge(ctx context.Context, occID int64, actor Actor) error
 
 // Shelve suppresses an existing occurrence until `expiry`. The caller (the web
 // layer) enforces who may shelve and the maximum duration.
-func (s *Store) Shelve(ctx context.Context, occID int64, expiry time.Time, reason string, actor Actor) error {
+func (s *Store) Shelve(ctx context.Context, occID int64, expiry time.Time, reason string, actor Actor, valueNow *float64) error {
 	return asConstraintError(pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		o, a, err := lockOccurrence(ctx, tx, occID)
 		if err != nil {
@@ -241,8 +243,8 @@ func (s *Store) Shelve(ctx context.Context, occID int64, expiry time.Time, reaso
 		}
 		now := time.Now()
 		if err := insertHistory(ctx, tx, historyRow{occ: occID, alarm: a, event: "SHELVED", prev: &o.State, next: str(StateShlvd),
-			value: o.PVValue, ts: now, userID: actorID(actor), userName: actor.Username, reason: reason,
-			details: "until " + expiry.Format(time.RFC3339)}); err != nil {
+			value: valueNow, ts: now, userID: actorID(actor), userName: actor.Username, reason: reason,
+			details: "until " + expiry.Local().Format("2006-01-02 15:04:05")}); err != nil {
 			return err
 		}
 		_, err = tx.Exec(ctx, `
@@ -256,13 +258,13 @@ func (s *Store) Shelve(ctx context.Context, occID int64, expiry time.Time, reaso
 // Unshelve ends a shelf (by a user, or automatically when actor.ID == 0 and
 // actor.Username == ""). The alarm becomes UNACK if the condition is still
 // abnormal, else RTNUN — it must be acknowledged again either way.
-func (s *Store) Unshelve(ctx context.Context, occID int64, actor Actor) error {
+func (s *Store) Unshelve(ctx context.Context, occID int64, actor Actor, valueNow *float64) error {
 	return asConstraintError(pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		return unshelve(ctx, tx, occID, actor, "")
+		return unshelve(ctx, tx, occID, actor, "", valueNow)
 	}))
 }
 
-func unshelve(ctx context.Context, tx pgx.Tx, occID int64, actor Actor, reason string) error {
+func unshelve(ctx context.Context, tx pgx.Tx, occID int64, actor Actor, reason string, valueNow *float64) error {
 	o, a, err := lockOccurrence(ctx, tx, occID)
 	if err != nil {
 		return err
@@ -275,7 +277,7 @@ func unshelve(ctx context.Context, tx pgx.Tx, occID int64, actor Actor, reason s
 		next = StateUnack
 	}
 	if err := insertHistory(ctx, tx, historyRow{occ: occID, alarm: a, event: "UNSHELVED", prev: str(StateShlvd), next: &next,
-		value: o.PVValue, ts: time.Now(), userID: actorID(actor), userName: actor.Username, reason: reason}); err != nil {
+		value: valueNow, ts: time.Now(), userID: actorID(actor), userName: actor.Username, reason: reason}); err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx, `
@@ -300,7 +302,7 @@ func (s *Store) ExpireShelves(ctx context.Context, now time.Time) (int, error) {
 	n := 0
 	for _, id := range ids {
 		err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-			return unshelve(ctx, tx, id, Actor{}, "shelf time ended")
+			return unshelve(ctx, tx, id, Actor{}, "shelf time ended", nil)
 		})
 		if err != nil && !errors.Is(err, ErrOccurrenceGone) && !errors.Is(err, ErrWrongAlarmState) {
 			return n, asConstraintError(err)

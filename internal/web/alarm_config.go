@@ -110,6 +110,7 @@ func (s *Server) alarmSave(c *gin.Context) {
 			if reset {
 				msg = "Alarm saved. Its approval was withdrawn because rationalized values changed: it is not evaluated until an administrator approves it again."
 			}
+			s.reloadAlarms()
 			payload, _ := json.Marshal(map[string]string{"configSaved": msg})
 			c.Header("HX-Trigger", string(payload))
 			c.Status(http.StatusNoContent)
@@ -148,6 +149,7 @@ func (s *Server) alarmApprove(c *gin.Context) {
 	err := s.alarmCfg.Approve(c.Request.Context(), actorOf(c), id)
 	switch {
 	case err == nil:
+		s.reloadAlarms()
 		c.Header("HX-Trigger", "configSaved")
 		s.message(c, "ok", "Rationalization approved. The alarm is now evaluated if it is enabled.")
 	case errors.Is(err, store.ErrNotRationalized):
@@ -170,4 +172,12 @@ func optIntField(f form, name string) *int {
 		return nil
 	}
 	return &n
+}
+
+// reloadAlarms makes the alarm engine read the definitions again now instead
+// of at its next periodic refresh.
+func (s *Server) reloadAlarms() {
+	if s.alarmReload != nil {
+		s.alarmReload()
+	}
 }

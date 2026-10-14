@@ -39,6 +39,13 @@ type Options struct {
 	// Live is the live-data module: dashboard rows and the PV detail are served
 	// from its memory and pushed to browsers. May be nil (then the database is read).
 	Live *live.Module
+	// AlarmView is the list of outstanding alarms (alarm page); MaxShelve is the
+	// longest time an alarm may be shelved (0 = no site limit: the user still
+	// has to choose a finite time); AlarmReload tells the alarm engine to read
+	// the alarm definitions again after a configuration change.
+	AlarmView   *alarms.View
+	MaxShelve   time.Duration
+	AlarmReload func()
 }
 
 type Server struct {
@@ -47,6 +54,9 @@ type Server struct {
 	cookie         auth.CookieOptions
 	pipeline       func() any
 	live           *live.Module
+	alarmView      *alarms.View
+	maxShelve      time.Duration
+	alarmReload    func()
 	tmpl           *template.Template
 	alarmCfg       *alarms.ConfigService
 	onConfigChange func() // tells acquisition to reload PLC/PV config now
@@ -58,7 +68,7 @@ func NewRouter(s *store.Store, onConfigChange func(), opt Options) *gin.Engine {
 		cookie.SameSite = http.SameSiteStrictMode
 	}
 	srv := &Server{
-		store: s, auth: auth.NewService(s, opt.SessionLifetime), cookie: cookie, pipeline: opt.Pipeline, live: opt.Live, alarmCfg: alarms.NewConfigService(s),
+		store: s, auth: auth.NewService(s, opt.SessionLifetime), cookie: cookie, pipeline: opt.Pipeline, live: opt.Live, alarmView: opt.AlarmView, maxShelve: opt.MaxShelve, alarmReload: opt.AlarmReload, alarmCfg: alarms.NewConfigService(s),
 		onConfigChange: onConfigChange,
 	}
 
@@ -78,6 +88,12 @@ func NewRouter(s *store.Store, onConfigChange func(), opt Options) *gin.Engine {
 	r.GET("/partials/pv-rows", srv.pvRows)
 	r.GET("/pv/:id", srv.pvDetail)
 	r.GET("/events", srv.events) // pushed live updates (Server-Sent Events)
+	// Alarm management: every logged-in user sees and acknowledges; supervisors
+	// and administrators shelve (auth.Rules)
+	r.GET("/alarms", srv.alarmsPage)
+	r.GET("/partials/alarm-rows", srv.alarmRowsPartial)
+	r.GET("/alarms/history", srv.alarmHistory)
+	r.GET("/alarm/:id", srv.alarmDetailPage)
 	r.GET("/pv/:id/history", srv.pvHistory)
 	// Configuration (CRUD for plc_metadata / pv_metadata)
 	r.GET("/config", srv.configPage)
@@ -102,6 +118,9 @@ func NewRouter(s *store.Store, onConfigChange func(), opt Options) *gin.Engine {
 	r.POST("/config/alarms", csrf, srv.alarmSave)
 	r.POST("/config/alarms/:id", csrf, srv.alarmSave)
 	r.POST("/config/alarms/:id/approve", csrf, srv.alarmApprove)
+	r.POST("/alarm/:id/ack", csrf, srv.alarmAck)
+	r.POST("/alarm/:id/shelve", csrf, srv.alarmShelve)
+	r.POST("/alarm/:id/unshelve", csrf, srv.alarmUnshelve)
 
 	// User management (administrators only)
 	r.GET("/config/users", srv.userList)

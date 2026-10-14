@@ -84,8 +84,14 @@ func TestIntegrationAlarmLifecycle(t *testing.T) {
 		if _, err := s.ActivateAlarm(ctx, def, hi, now()); err == nil {
 			t.Error("a second activation of an abnormal alarm must be refused (no duplicates)")
 		}
-		if err := s.Acknowledge(ctx, occ, op); err != nil {
+		ackValue := sp + 3
+		if err := s.Acknowledge(ctx, occ, op, &ackValue); err != nil {
 			t.Fatal(err)
+		}
+		var recorded *float64
+		s.pool.QueryRow(ctx, `SELECT pv_value FROM alarm_history WHERE occurrence_id=$1 AND event_type='ACKNOWLEDGED'`, occ).Scan(&recorded)
+		if recorded == nil || *recorded != ackValue {
+			t.Errorf("history value of the acknowledgement = %v, want the value at that moment (%v), not the activation value", recorded, ackValue)
 		}
 		if state(occ) != StateAcked {
 			t.Fatalf("state = %s", state(occ))
@@ -113,7 +119,7 @@ func TestIntegrationAlarmLifecycle(t *testing.T) {
 		if err != nil || occ2 == occ {
 			t.Fatalf("re-activation while the older one waits for acknowledgement: id %d err %v, want a new occurrence", occ2, err)
 		}
-		if err := s.Acknowledge(ctx, occ, op); err != nil { // RTNUN → NORM
+		if err := s.Acknowledge(ctx, occ, op, nil); err != nil { // RTNUN → NORM
 			t.Fatal(err)
 		}
 		if state(occ) != "(gone)" || state(occ2) != StateUnack {
@@ -122,22 +128,22 @@ func TestIntegrationAlarmLifecycle(t *testing.T) {
 		if got := events(occ); got != "ACTIVATED:->UNACK RETURNED_TO_NORMAL:UNACK>RTNUN ACKNOWLEDGED:RTNUN>NORM " {
 			t.Errorf("history = %q", got)
 		}
-		s.Acknowledge(ctx, occ2, op)
+		s.Acknowledge(ctx, occ2, op, nil)
 		s.ReturnToNormal(ctx, occ2, sp-5, now())
 	})
 
 	t.Run("shelving keeps tracking the process condition", func(t *testing.T) {
 		occ, _ := s.ActivateAlarm(ctx, def, hi, now())
-		if err := s.Shelve(ctx, occ, now().Add(time.Hour), "", sup); err == nil {
+		if err := s.Shelve(ctx, occ, now().Add(time.Hour), "", sup, nil); err == nil {
 			t.Error("shelving without a reason must be refused")
 		}
-		if err := s.Shelve(ctx, occ, now().Add(time.Hour), "instrument being repaired", sup); err != nil {
+		if err := s.Shelve(ctx, occ, now().Add(time.Hour), "instrument being repaired", sup, nil); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.Shelve(ctx, occ, now().Add(time.Hour), "again", sup); !errors.Is(err, ErrWrongAlarmState) {
+		if err := s.Shelve(ctx, occ, now().Add(time.Hour), "again", sup, nil); !errors.Is(err, ErrWrongAlarmState) {
 			t.Errorf("shelving twice: %v", err)
 		}
-		if err := s.Acknowledge(ctx, occ, op); !errors.Is(err, ErrWrongAlarmState) {
+		if err := s.Acknowledge(ctx, occ, op, nil); !errors.Is(err, ErrWrongAlarmState) {
 			t.Errorf("acknowledging a shelved alarm: %v", err)
 		}
 		if err := s.ReturnToNormal(ctx, occ, sp-5, now()); err != nil {
@@ -150,7 +156,7 @@ func TestIntegrationAlarmLifecycle(t *testing.T) {
 		if err != nil || again != occ {
 			t.Fatalf("got occurrence %d err %v, want the shelved occurrence %d", again, err, occ)
 		}
-		if err := s.Unshelve(ctx, occ, sup); err != nil {
+		if err := s.Unshelve(ctx, occ, sup, nil); err != nil {
 			t.Fatal(err)
 		}
 		if state(occ) != StateUnack {
@@ -159,14 +165,14 @@ func TestIntegrationAlarmLifecycle(t *testing.T) {
 		if got := events(occ); got != "ACTIVATED:->UNACK SHELVED:UNACK>SHLVD RETURNED_TO_NORMAL:SHLVD>- ACTIVATED:SHLVD>- UNSHELVED:SHLVD>UNACK " {
 			t.Errorf("history = %q", got)
 		}
-		s.Acknowledge(ctx, occ, op)
+		s.Acknowledge(ctx, occ, op, nil)
 		s.ReturnToNormal(ctx, occ, sp-5, now())
 	})
 
 	t.Run("a shelf that ends returns the alarm to the list: UNACK if still abnormal, RTNUN if not", func(t *testing.T) {
 		a, _ := s.ActivateAlarm(ctx, def, hi, now())
-		s.Acknowledge(ctx, a, op)
-		if err := s.Shelve(ctx, a, now().Add(300*time.Millisecond), "short shelf", sup); err != nil {
+		s.Acknowledge(ctx, a, op, nil)
+		if err := s.Shelve(ctx, a, now().Add(300*time.Millisecond), "short shelf", sup, nil); err != nil {
 			t.Fatal(err)
 		}
 		if n, _ := s.ExpireShelves(ctx, now()); n != 0 {
@@ -182,21 +188,21 @@ func TestIntegrationAlarmLifecycle(t *testing.T) {
 		}
 
 		s.ReturnToNormal(ctx, a, sp-5, now()) // UNACK → RTNUN
-		s.Shelve(ctx, a, now().Add(300*time.Millisecond), "again", sup)
+		s.Shelve(ctx, a, now().Add(300*time.Millisecond), "again", sup, nil)
 		time.Sleep(400 * time.Millisecond)
 		if n, _ := s.ExpireShelves(ctx, now()); n != 1 || state(a) != StateRTNUN {
 			t.Fatalf("expired %d state %s, want RTNUN", n, state(a))
 		}
-		s.Acknowledge(ctx, a, op)
+		s.Acknowledge(ctx, a, op, nil)
 	})
 
 	t.Run("acknowledging something that does not exist or is already acknowledged is refused", func(t *testing.T) {
-		if err := s.Acknowledge(ctx, 999999, op); !errors.Is(err, ErrOccurrenceGone) {
+		if err := s.Acknowledge(ctx, 999999, op, nil); !errors.Is(err, ErrOccurrenceGone) {
 			t.Errorf("got %v", err)
 		}
 		a, _ := s.ActivateAlarm(ctx, def, hi, now())
-		s.Acknowledge(ctx, a, op)
-		if err := s.Acknowledge(ctx, a, op); !errors.Is(err, ErrWrongAlarmState) {
+		s.Acknowledge(ctx, a, op, nil)
+		if err := s.Acknowledge(ctx, a, op, nil); !errors.Is(err, ErrWrongAlarmState) {
 			t.Errorf("second acknowledgement: %v", err)
 		}
 		s.ReturnToNormal(ctx, a, sp-5, now())

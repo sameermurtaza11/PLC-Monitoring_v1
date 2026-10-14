@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"PLC_Monitoring/internal/auth"
+	"PLC_Monitoring/internal/store"
 )
 
 const (
@@ -26,9 +29,17 @@ func (s *Server) render(name string, data any) (string, error) {
 	return b.String(), nil
 }
 
+// frame is one named block of HTML pushed to the browser.
+type frame struct{ event, html string }
+
 // events is the pushed-updates stream (Server-Sent Events): the browser opens it
-// once and receives the dashboard rows ("rows") and, with ?pv=ID, the live block
-// of that PV ("live") whenever they change — no polling, no database query.
+// once and receives HTML blocks whenever they change — no polling, no database
+// query per browser.
+//
+//	/events                         dashboard rows ("rows")
+//	/events?pv=ID                   + the live block of that PV ("live")
+//	/events?view=alarms             alarm list ("rows") and its counts ("summary")
+//	/events?view=alarms&alarm=OCC   + that alarm's "detail" and "actions"
 //
 // Each connection reads the live module's memory itself, so a slow browser can
 // only delay its own connection: it is conflated to the newest state (nothing
@@ -38,14 +49,44 @@ func (s *Server) events(c *gin.Context) {
 		c.String(http.StatusServiceUnavailable, "live data is not available")
 		return
 	}
-	pvID := 0
-	if v := c.Query("pv"); v != "" {
-		id, err := strconv.Atoi(v)
-		if err != nil {
-			c.String(http.StatusBadRequest, "invalid PV id")
+	view := c.Query("view")
+	idParam := c.Query("pv")
+	if view == "alarms" {
+		idParam = c.Query("alarm")
+	}
+	var id int64
+	if idParam != "" {
+		n, err := strconv.ParseInt(idParam, 10, 64)
+		if err != nil || n <= 0 {
+			c.String(http.StatusBadRequest, "invalid id")
 			return
 		}
-		pvID = id
+		id = n
+	}
+
+	user := auth.FromContext(c)
+	var produce func(listChanged bool) []frame
+	var version func() [2]uint64
+	switch view {
+	case "", "pv":
+		version = func() [2]uint64 { return [2]uint64{s.live.Version(), 0} }
+		produce = func(bool) []frame { return s.pvFrames(int(id)) }
+	case "alarms":
+		if s.alarmView == nil {
+			c.String(http.StatusServiceUnavailable, "alarms are not available")
+			return
+		}
+		version = func() [2]uint64 { return [2]uint64{s.live.Version(), s.alarmView.Version()} }
+		var events []store.HistoryEvent // re-read only when the alarm list changed
+		produce = func(listChanged bool) []frame {
+			if listChanged {
+				events = nil
+			}
+			return s.alarmFrames(c, id, user, &events)
+		}
+	default:
+		c.String(http.StatusBadRequest, "unknown view")
+		return
 	}
 	if !s.live.Attach() {
 		c.String(http.StatusServiceUnavailable, "too many live connections")
@@ -60,48 +101,42 @@ func (s *Server) events(c *gin.Context) {
 	c.Status(http.StatusOK)
 	rc := http.NewResponseController(c.Writer)
 
-	write := func(s2 string) bool {
+	write := func(text string) bool {
 		rc.SetWriteDeadline(time.Now().Add(pushWriteWait))
-		if _, err := c.Writer.WriteString(s2); err != nil {
+		if _, err := c.Writer.WriteString(text); err != nil {
 			return false
 		}
 		return rc.Flush() == nil
 	}
-	send := func(event, html string) bool {
+	send := func(f frame) bool {
 		var b strings.Builder
-		b.WriteString("event: " + event + "\n")
-		for _, line := range strings.Split(html, "\n") {
+		b.WriteString("event: " + f.event + "\n")
+		for _, line := range strings.Split(f.html, "\n") {
 			b.WriteString("data: " + strings.TrimRight(line, "\r") + "\n")
 		}
 		b.WriteString("\n")
 		return write(b.String())
 	}
 
-	var lastRows, lastLive string
-	var lastVer uint64
+	last := map[string]string{}
+	var lastVer [2]uint64
 	var lastRender, lastWrite time.Time
+	first := true
 	push := func() bool {
-		ver := s.live.Version()
-		if ver == lastVer && time.Since(lastRender) < pushRefresh {
+		ver := version()
+		if !first && ver == lastVer && time.Since(lastRender) < pushRefresh {
 			return true
 		}
-		lastVer, lastRender = ver, time.Now()
-		rows, err := s.render("pv_rows.html", s.live.Snapshot())
-		if err == nil && rows != lastRows {
-			if !send("rows", rows) {
+		listChanged := first || ver[1] != lastVer[1]
+		lastVer, lastRender, first = ver, time.Now(), false
+		for _, f := range produce(listChanged) {
+			if last[f.event] == f.html {
+				continue
+			}
+			if !send(f) {
 				return false
 			}
-			lastRows, lastWrite = rows, time.Now()
-		}
-		if pvID != 0 {
-			if row, ok := s.live.Get(pvID); ok {
-				if html, err := s.render("pv_live.html", row); err == nil && html != lastLive {
-					if !send("live", html) {
-						return false
-					}
-					lastLive, lastWrite = html, time.Now()
-				}
-			}
+			last[f.event], lastWrite = f.html, time.Now()
 		}
 		return true
 	}
@@ -130,4 +165,47 @@ func (s *Server) events(c *gin.Context) {
 			}
 		}
 	}
+}
+
+// pvFrames: dashboard rows and, for an open PV detail, its live block.
+func (s *Server) pvFrames(pvID int) []frame {
+	var out []frame
+	if rows, err := s.render("pv_rows.html", s.live.Snapshot()); err == nil {
+		out = append(out, frame{"rows", rows})
+	}
+	if pvID != 0 {
+		if row, ok := s.live.Get(pvID); ok {
+			if html, err := s.render("pv_live.html", row); err == nil {
+				out = append(out, frame{"live", html})
+			}
+		}
+	}
+	return out
+}
+
+// alarmFrames: the alarm list, its counts and, for an open alarm detail, the
+// changing part of the modal and its action buttons.
+func (s *Server) alarmFrames(c *gin.Context, occ int64, user *auth.User, events *[]store.HistoryEvent) []frame {
+	var out []frame
+	if rows, err := s.renderAlarmRows(); err == nil {
+		out = append(out, frame{"rows", rows})
+	}
+	if sum, err := s.renderAlarmSummary(); err == nil {
+		out = append(out, frame{"summary", sum})
+	}
+	if occ == 0 {
+		return out
+	}
+	d, err := s.detailOf(c, occ, user, *events)
+	if err != nil {
+		return out
+	}
+	*events = d.Events
+	if dyn, err := s.render("alarm_dyn.html", d); err == nil {
+		out = append(out, frame{"detail", dyn})
+	}
+	if act, err := s.render("alarm_actions.html", d); err == nil {
+		out = append(out, frame{"actions", act})
+	}
+	return out
 }

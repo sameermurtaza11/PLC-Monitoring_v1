@@ -120,3 +120,36 @@ form.inline { display: inline; margin: 0; }
 .account-form { display: grid; gap: 10px; }
 .account-form label { display: grid; gap: 4px; }
 .account-form input { padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font: inherit; }
+
+/* ---- alarm management ---- */
+.badge.info { background: #2a78d6; }
+.live-line { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 0 0 10px; }
+.live-line #live-summary { display: flex; flex-wrap: wrap; gap: 8px; }
+.count { padding: 2px 10px; border-radius: 10px; font-size: 13px; background: #eef0f3; color: var(--text); }
+.count.bad { background: #fde8e8; color: var(--bad); }
+.count.warn { background: #fdf0dc; color: var(--warn); }
+.count.info { background: #e3effc; color: #1f5fae; }
+.small { font-size: 12px; }
+.wrap { white-space: normal !important; min-width: 180px; }
+tr.al-UNACK td { background: #fff7f7; }
+tr.al-RTNUN td { background: #fffaf0; }
+tr.al-SHLVD td { color: var(--muted); }
+@keyframes al-flash { 50% { opacity: .35; } }
+.badge.flash { animation: al-flash 1s step-end infinite; }
+@media (prefers-reduced-motion: reduce) { .badge.flash { animation: none; } }
+.al-message { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 8px; font-size: 16px; }
+.al-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; margin: 8px 0 14px; }
+details.shelve { border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; background: #fff; }
+details.shelve summary { cursor: pointer; font-weight: 600; padding: 2px 0; }
+details.shelve .cfg-form { padding: 8px 0 4px; min-width: min(460px, 80vw); }
+.alarm-detail h3 { font-size: 14px; margin: 14px 0 6px; }
+.alarm-defs { grid-template-columns: 1fr 1fr; }
+@media (max-width: 720px) { .alarm-defs { grid-template-columns: 1fr; } }
+.small-table th, .small-table td { padding: 4px 8px; font-size: 13px; }
+.filters { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-end; margin-bottom: 16px; }
+.filters label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 13px; }
+.filters select { padding: 4px 6px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }
+.stat span { color: var(--muted); font-size: 12px; }
+.stat strong { font-size: 18px; font-variant-numeric: tabular-nums; }

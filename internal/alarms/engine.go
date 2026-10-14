@@ -129,6 +129,7 @@ type Options struct {
 	DBRetry    time.Duration // pause database writes after a failure (default 2 s)
 	DBTimeout  time.Duration // per database call (default 5 s)
 	Logf       func(format string, args ...any)
+	OnChange   func() // called after the engine changed the alarm list (activation, return to normal, shelf ended)
 }
 
 func (o *Options) fill() {
@@ -149,6 +150,9 @@ func (o *Options) fill() {
 	}
 	if o.Logf == nil {
 		o.Logf = log.Printf
+	}
+	if o.OnChange == nil {
+		o.OnChange = func() {}
 	}
 }
 
@@ -374,6 +378,7 @@ func (m *Module) handle(s bus.Sample) {
 			} else {
 				st.occ, st.due = id, time.Time{}
 				m.activations.Add(1)
+				m.opt.OnChange()
 				m.opt.Logf("alarms: ACTIVATED %s %s %s (value %g)", st.def.PLCName, st.def.PVName, st.def.AlarmType, s.Value)
 			}
 		case clear:
@@ -383,6 +388,7 @@ func (m *Module) handle(s bus.Sample) {
 			} else {
 				st.occ, st.due = 0, time.Time{}
 				m.returns.Add(1)
+				m.opt.OnChange()
 				m.opt.Logf("alarms: RETURNED TO NORMAL %s %s %s (value %g)", st.def.PLCName, st.def.PVName, st.def.AlarmType, s.Value)
 			}
 		}
@@ -403,6 +409,7 @@ func (m *Module) expireShelves() {
 	}
 	if n > 0 {
 		m.shelvesEnded.Add(uint64(n))
+		m.opt.OnChange()
 		m.opt.Logf("alarms: %d shelved alarm(s) returned to the alarm list (shelf time ended)", n)
 	}
 }

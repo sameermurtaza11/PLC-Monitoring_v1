@@ -21,6 +21,16 @@ var Rules = map[string]Level{
 	"GET /events":           Authenticated, // pushed live updates (SSE)
 	"GET /pv/:id/history":   Authenticated,
 
+	// alarm management: everyone logged in sees the alarms and acknowledges;
+	// shelving and unshelving are for supervisors and administrators
+	"GET /alarms":              Authenticated,
+	"GET /partials/alarm-rows": Authenticated,
+	"GET /alarms/history":      Authenticated,
+	"GET /alarm/:id":           Authenticated,
+	"POST /alarm/:id/ack":      Authenticated,
+	"POST /alarm/:id/shelve":   Config,
+	"POST /alarm/:id/unshelve": Config,
+
 	// supervisors and administrators: PLC / PV configuration
 	"GET /config":               Config,
 	"GET /config/plcs":          Config,

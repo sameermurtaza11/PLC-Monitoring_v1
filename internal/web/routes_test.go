@@ -133,11 +133,11 @@ func TestMenuHidesConfigurationFromOperators(t *testing.T) {
 	if got := names(nil); len(got) != 0 {
 		t.Errorf("anonymous menu = %v", got)
 	}
-	if got := names(&auth.User{Role: auth.Operator}); len(got) != 1 || got[0] != "Dashboard" {
-		t.Errorf("operator menu = %v, want only Dashboard", got)
+	if got := names(&auth.User{Role: auth.Operator}); len(got) != 3 || got[0] != "Dashboard" || got[1] != "Alarms" || got[2] != "Alarm History" {
+		t.Errorf("operator menu = %v, want Dashboard, Alarms, Alarm History (no Configuration)", got)
 	}
 	for _, role := range []auth.Role{auth.Supervisor, auth.Admin} {
-		if got := names(&auth.User{Role: role}); len(got) != 2 || got[1] != "Configuration" {
+		if got := names(&auth.User{Role: role}); len(got) != 4 || got[3] != "Configuration" {
 			t.Errorf("%s menu = %v", role, got)
 		}
 	}

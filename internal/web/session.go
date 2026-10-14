@@ -23,7 +23,7 @@ func navFor(user *auth.User) []navItem {
 	if user == nil {
 		return nil
 	}
-	items := []navItem{{"dashboard", "Dashboard", "/"}}
+	items := []navItem{{"dashboard", "Dashboard", "/"}, {"alarms", "Alarms", "/alarms"}, {"alarm_history", "Alarm History", "/alarms/history"}}
 	if user.Role.Allows(auth.Config) {
 		items = append(items, navItem{"config", "Configuration", "/config"})
 	}
@@ -72,14 +72,18 @@ func (s *Server) denied(c *gin.Context, d auth.Denial) {
 // auditAlarmDenial records a logged-in user's refused attempt on an alarm
 // route, so refused actions are as visible as permitted ones.
 func (s *Server) auditAlarmDenial(c *gin.Context, d auth.Denial) {
-	if d.Status != http.StatusForbidden || d.User == nil || s.store == nil || !strings.HasPrefix(c.FullPath(), "/config/alarms") {
+	if d.Status != http.StatusForbidden || d.User == nil || s.store == nil || !strings.HasPrefix(c.FullPath(), "/config/alarms") && !strings.HasPrefix(c.FullPath(), "/alarm/") {
 		return
 	}
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	reason := "role " + string(d.User.Role) + " may not " + c.Request.Method + " " + c.FullPath()
+	if strings.HasPrefix(c.FullPath(), "/alarm/") { // the id is an occurrence, not an alarm definition
+		reason += " (occurrence " + strconv.FormatInt(id, 10) + ")"
+		id = 0
+	}
 	_ = s.store.RecordAlarmAudit(c.Request.Context(), store.AlarmAudit{
 		Actor:  store.Actor{ID: d.User.ID, Username: d.User.Username, IP: c.ClientIP()},
-		Action: "ACTION_DENIED", AlarmID: id, Outcome: "denied",
-		Reason: "role " + string(d.User.Role) + " may not " + c.Request.Method + " " + c.FullPath(),
+		Action: "ACTION_DENIED", AlarmID: id, Outcome: "denied", Reason: reason,
 	})
 }
 

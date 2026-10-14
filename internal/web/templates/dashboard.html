@@ -29,7 +29,7 @@
         </tr>
       </thead>
       <!-- HTMX loads the initial rows once; app.js then keeps them current from the pushed /events stream. -->
-      <tbody id="pv-live-rows" hx-get="/partials/pv-rows" hx-trigger="load" hx-swap="innerHTML">
+      <tbody id="live-rows" data-stream="/events" hx-get="/partials/pv-rows" hx-trigger="load" hx-swap="innerHTML">
         <tr><td colspan="9" class="muted">Loading…</td></tr>
       </tbody>
     </table>

@@ -89,7 +89,10 @@ func main() {
 	// The alarm engine reads the same samples as everyone else, never pv_latest.
 	// If it ever falls behind, the oldest queued samples are dropped and counted
 	// (its decisions are level-based, so a newer sample of the same PV follows).
-	alarmModule := alarms.New(alarms.FromStore(db), sampleBus.Subscribe("alarms", alarmQueue, bus.DropOldest), alarms.Options{})
+	alarmView := alarms.NewView(db, 0) // the outstanding-alarm list of the alarm page
+	alarmModule := alarms.New(alarms.FromStore(db), sampleBus.Subscribe("alarms", alarmQueue, bus.DropOldest),
+		alarms.Options{OnChange: alarmView.Poke})
+	go alarmView.Run(ctx)
 	alarmDone := make(chan struct{})
 	go func() {
 		defer close(alarmDone)
@@ -125,6 +128,9 @@ func main() {
 		SameSiteStrict:  cfg.CookieSameSite == "strict",
 		SessionLifetime: cfg.SessionHours,
 		Live:            liveModule,
+		AlarmView:       alarmView,
+		MaxShelve:       cfg.MaxShelve,
+		AlarmReload:     alarmModule.Reload,
 		// Health of the sample pipeline: queue sizes and every drop, for operators.
 		Pipeline: func() any {
 			out := map[string]any{"bus": sampleBus.Stats(), "storage": storageModule.Stats(), "live": liveModule.Stats(), "alarms": alarmModule.Stats()}

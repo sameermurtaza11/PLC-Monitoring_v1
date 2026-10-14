@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Alarm History · PLC Monitoring</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  {{template "nav" .}}
+
+  <main>
+    <form method="get" action="/alarms/history" class="filters">
+      <label>Period
+        <select name="range">{{range .Ranges}}<option value="{{.Key}}" {{if eq .Key $.Range}}selected{{end}}>{{.Label}}</option>{{end}}</select>
+      </label>
+      <label>Alarm
+        <select name="alarm">
+          <option value="0">All alarms</option>
+          {{range .Defs}}<option value="{{.ID}}" {{if eq .ID $.AlarmID}}selected{{end}}>{{.PLCName}} / {{.PVName}} {{.AlarmType}}</option>{{end}}
+        </select>
+      </label>
+      <label>Priority
+        <select name="priority"><option value="">All</option>{{range .Priorities}}<option {{if eq . $.Priority}}selected{{end}}>{{.}}</option>{{end}}</select>
+      </label>
+      <label>Event
+        <select name="event"><option value="">All</option>{{range .EventTypes}}<option value="{{.}}" {{if eq . $.Event}}selected{{end}}>{{eventLabel .}}</option>{{end}}</select>
+      </label>
+      <button type="submit" class="primary">Show</button>
+    </form>
+
+    <section>
+      <div class="section-head"><h2>Statistics</h2></div>
+      <p class="muted small">Plain counts for the selected period (all alarms, filters above do not apply). Whether they are acceptable is a matter of the site alarm philosophy; no targets are applied here.</p>
+      <div class="stats">
+        <div class="stat"><span>Activations</span><strong>{{.Stats.Activations}}</strong></div>
+        <div class="stat"><span>Critical / Major / Minor</span><strong>{{index .Stats.ByPriority "Critical"}} / {{index .Stats.ByPriority "Major"}} / {{index .Stats.ByPriority "Minor"}}</strong></div>
+        <div class="stat"><span>Peak activations in 10 min</span><strong>{{.Stats.PeakIn10Min}}</strong></div>
+        <div class="stat"><span>Acknowledgements</span><strong>{{.Stats.Acknowledgements}}</strong></div>
+        <div class="stat"><span>Avg / max time to acknowledge</span><strong>{{durSec .Stats.AvgTimeToAckSec}} / {{durSec .Stats.MaxTimeToAckSec}}</strong></div>
+        <div class="stat"><span>Acknowledged later than allowed response time</span><strong>{{.Stats.OutsideResponseMax}}</strong></div>
+        <div class="stat"><span>Shelvings</span><strong>{{.Stats.Shelvings}}</strong></div>
+        <div class="stat"><span>Outstanding now</span><strong>{{.Stats.OutstandingNow}}</strong></div>
+        <div class="stat"><span>Standing longer than 24 h</span><strong>{{.Stats.StandingOver24h}}</strong></div>
+        <div class="stat"><span>Shelved now</span><strong>{{.Stats.ShelvedNow}}</strong></div>
+      </div>
+      <h3>Most frequent alarms</h3>
+      <table class="pv-table small-table">
+        <thead><tr><th>PLC</th><th>PV Name</th><th>Type</th><th>Alarm</th><th class="num">Activations</th></tr></thead>
+        <tbody>
+        {{range .Stats.Top}}<tr><td>{{.PLCName}}</td><td>{{.PVName}}</td><td><span class="tag">{{.AlarmType}}</span></td><td>{{.Message}}</td><td class="num">{{.Activations}}</td></tr>
+        {{else}}<tr><td colspan="5" class="muted">No activations in this period.</td></tr>{{end}}
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <div class="section-head"><h2>Event log</h2></div>
+      {{if gt .Total (len .Events)}}<p class="muted small">Showing the newest {{len .Events}} of {{.Total}} matching events — narrow the period or filters to see the others.</p>{{end}}
+      <div class="table-scroll">
+      <table class="pv-table">
+        <thead>
+          <tr><th>Time</th><th>PLC</th><th>PV Name</th><th>Alarm</th><th>Priority</th><th>Event</th><th>State change</th>
+              <th class="num">Value</th><th>User</th><th>Details</th></tr>
+        </thead>
+        <tbody>
+        {{range .Events}}{{$e := .}}
+        <tr>
+          <td class="muted">{{ts .TS}}</td>
+          <td>{{.PLCName}}</td>
+          <td>{{.PVName}}</td>
+          <td><span class="tag">{{.AlarmType}}</span> {{.Message}}</td>
+          <td>{{if .Priority}}<span class="badge {{priorityClass .Priority}}">{{.Priority}}</span>{{end}}</td>
+          <td>{{eventLabel .Event}}</td>
+          <td>{{if .Prev}}{{.Prev}}{{else}}—{{end}} → {{if .Next}}{{.Next}}{{else}}(no change){{end}}</td>
+          <td class="num">{{eventValue .}}</td>
+          <td>{{if .UserName}}{{.UserName}}{{else}}<span class="muted">automatic</span>{{end}}</td>
+          <td class="wrap">{{.Details}}{{if .Reason}}{{if .Details}} · {{end}}Reason: {{.Reason}}{{end}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="10" class="muted">No events match.</td></tr>
+        {{end}}
+        </tbody>
+      </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

@@ -39,13 +39,14 @@
   });
 
   // ------------------------------------------------------------------
-  // Pushed live updates. One EventSource per dashboard page; while a PV detail
-  // is open it is reopened with ?pv=ID so the server also pushes that PV's
-  // live block. After a reconnect the server sends the full current state.
+  // Pushed live updates. One EventSource per page (dashboard rows or alarm
+  // list, from the tbody's data-stream). While a detail dialog is open the
+  // stream is reopened with the id of that PV / alarm so the server also pushes
+  // its live block. After a reconnect the server sends the full current state.
   // ------------------------------------------------------------------
   let stream = null;
-  let streamPV = 0;
-  const liveRows = () => document.getElementById("pv-live-rows");
+  let streamID = 0;
+  const liveRows = () => document.getElementById("live-rows");
 
   function setLiveState(text, cls) {
     const el = document.getElementById("live-state");
@@ -54,27 +55,69 @@
     el.className = "badge " + cls;
   }
 
-  function openStream(pvId) {
-    if (!liveRows()) return; // only the dashboard shows live values
+  // Pushed event name -> the element it replaces.
+  const targets = {
+    rows: () => liveRows(),
+    summary: () => document.getElementById("live-summary"),
+    live: () => document.querySelector("#pv-detail .live-wrap"),
+    detail: () => document.getElementById("alarm-dyn"),
+    actions: () => document.getElementById("alarm-actions"),
+  };
+
+  function openStream(id) {
+    const tb = liveRows();
+    if (!tb) return; // only pages with live rows
     if (stream) stream.close();
-    streamPV = pvId;
-    stream = new EventSource("/events" + (pvId ? "?pv=" + pvId : ""));
+    streamID = id;
+    const base = tb.dataset.stream || "/events";
+    const param = base.includes("alarms") ? "alarm" : "pv";
+    stream = new EventSource(base + (id ? (base.includes("?") ? "&" : "?") + param + "=" + id : ""));
     stream.onopen = () => setLiveState("Live", "ok");
     stream.onerror = () => setLiveState("Disconnected — reconnecting…", "bad");
-    stream.addEventListener("rows", (e) => {
-      const tb = liveRows();
-      tb.innerHTML = e.data;
-      htmx.process(tb); // the "More" buttons are new elements
-    });
-    stream.addEventListener("live", (e) => {
-      const wrap = document.querySelector("#pv-detail .live-wrap");
-      if (!wrap) return;
-      wrap.innerHTML = e.data;
-      updateGauge();
+    Object.keys(targets).forEach((name) => {
+      stream.addEventListener(name, (e) => {
+        const el = targets[name]();
+        if (!el) return;
+        el.innerHTML = e.data;
+        if (window.htmx) htmx.process(el); // buttons in the new HTML
+        if (name === "live") updateGauge();
+      });
     });
   }
 
   window.addEventListener("DOMContentLoaded", () => openStream(0));
+
+  // Alarm page: result of Acknowledge / Shelve / Unshelve (HX-Trigger alarmMsg).
+  document.body.addEventListener("alarmMsg", (e) => {
+    const box = document.getElementById("alarm-msg");
+    if (!box) return;
+    const d = e.detail || {};
+    box.innerHTML = "";
+    const div = document.createElement("div");
+    div.className = "msg " + (d.kind === "error" ? "error" : "ok");
+    div.textContent = d.text || "";
+    box.appendChild(div);
+    if (d.kind !== "error") setTimeout(() => { if (div.parentNode === box) div.remove(); }, 6000);
+  });
+
+  // Alarm detail dialog: open it when the HTML arrives, follow that alarm, and
+  // stop following it when the dialog closes.
+  document.body.addEventListener("htmx:afterSwap", (e) => {
+    if (e.detail.target.id !== "alarm-detail") return;
+    const dlg = document.getElementById("alarm-modal");
+    if (!dlg.open) dlg.showModal();
+    const d = e.detail.target.querySelector(".alarm-detail");
+    if (d) openStream(Number(d.dataset.occId));
+  });
+  document.addEventListener("close", (e) => {
+    if (e.target.id === "alarm-modal" && streamID) openStream(0);
+  }, true);
+  window.addEventListener("DOMContentLoaded", () => {
+    const id = new URLSearchParams(location.search).get("alarm");
+    if (id && /^\d+$/.test(id) && document.getElementById("alarm-detail")) {
+      htmx.ajax("GET", "/alarm/" + id, { target: "#alarm-detail", swap: "innerHTML" });
+    }
+  });
 
   // Direct link /pv/{id} redirects to /?pv={id}: open that PV's detail on load.
   window.addEventListener("DOMContentLoaded", () => {
@@ -87,7 +130,7 @@
   document.addEventListener("close", (e) => {
     if (e.target.id === "pv-modal") {
       disposeCharts();
-      if (streamPV) openStream(0);
+      if (streamID) openStream(0);
     }
   }, true);
 
@@ -105,7 +148,7 @@
   function initDetail() {
     disposeCharts();
     const d = document.querySelector("#pv-detail .detail");
-    if (d && Number(d.dataset.pvId) !== streamPV) openStream(Number(d.dataset.pvId));
+    if (d && Number(d.dataset.pvId) !== streamID) openStream(Number(d.dataset.pvId));
     initGauge();
     updateLamp();
     initCompare();
