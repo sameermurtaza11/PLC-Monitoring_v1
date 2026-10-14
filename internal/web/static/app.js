@@ -63,6 +63,7 @@
     detail: () => document.getElementById("alarm-dyn"),
     actions: () => document.getElementById("alarm-actions"),
     pvalarms: () => document.getElementById("pv-alarms"),
+    pager: () => document.getElementById("live-pager"),
   };
   // "badge" carries only a number for the menu badge (see nav.js).
   const badge = (e) => window.updateNavBadge && window.updateNavBadge(Number(e.data));
@@ -78,6 +79,8 @@
     if (id) extra.push(param + "=" + id);
     const fq = filterQuery();
     if (fq) extra.push(fq);
+    const pq = pageQuery();
+    if (pq) extra.push(pq);
     stream = new EventSource(base + (extra.length ? (base.includes("?") ? "&" : "?") + extra.join("&") : ""));
     stream.onopen = () => setLiveState("Live", "ok");
     stream.onerror = () => setLiveState("Disconnected — reconnecting…", "bad");
@@ -90,6 +93,7 @@
         el.innerHTML = e.data;
         if (window.htmx) htmx.process(el); // buttons in the new HTML
         if (name === "live") updateGauge();
+        if (name === "pager") syncPager(el);
       });
     });
   }
@@ -114,9 +118,39 @@
     return p.toString();
   }
 
-  function applyFilter() {
-    const q = filterQuery();
+  // Paging (alarm list): the page and the rows per page live in the page address too.
+  const urlParams = new URLSearchParams(location.search);
+  let pageNo = Number(urlParams.get("page")) || 1;
+  let pageSize = Number(urlParams.get("size")) || 0; // 0 = the server's default
+
+  function pageQuery() {
+    if (!document.getElementById("live-pager")) return "";
+    const p = new URLSearchParams();
+    if (pageNo > 1) p.set("page", pageNo);
+    if (pageSize) p.set("size", pageSize);
+    return p.toString();
+  }
+
+  function updateAddress() {
+    const q = [filterQuery(), pageQuery()].filter(Boolean).join("&");
     history.replaceState(null, "", location.pathname + (q ? "?" + q : "") + location.hash);
+  }
+
+  // The server tells which page it really showed (the one asked for may be past the end).
+  function syncPager(el) {
+    const info = el.querySelector(".pager-info");
+    if (!info) return;
+    const page = Number(info.dataset.page), size = Number(info.dataset.size);
+    if (page !== pageNo || (pageSize && size !== pageSize)) {
+      pageNo = page;
+      if (pageSize) pageSize = size;
+      updateAddress();
+    }
+  }
+
+  function applyFilter() {
+    pageNo = 1; // a different filter starts at the first page
+    updateAddress();
     openStream(streamID); // the first push of the new stream is already filtered
   }
 
@@ -127,6 +161,23 @@
     const box = document.getElementById("filter-box");
     if (box && window.matchMedia("(max-width: 760px)").matches && !filterQuery()) box.open = false;
     f.addEventListener("change", applyFilter);
+    const pager = document.getElementById("live-pager");
+    if (pager) {
+      pager.addEventListener("click", (e) => {
+        const b = e.target.closest("button[data-page]");
+        if (!b || b.disabled || !b.dataset.page) return;
+        pageNo = Number(b.dataset.page);
+        updateAddress();
+        openStream(streamID);
+      });
+      pager.addEventListener("change", (e) => {
+        if (!e.target.matches("[data-pager-size]")) return;
+        pageSize = Number(e.target.value);
+        pageNo = 1;
+        updateAddress();
+        openStream(streamID);
+      });
+    }
     let timer = null;
     f.addEventListener("input", (e) => {
       if (e.target.name !== "q") return;

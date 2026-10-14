@@ -11,6 +11,7 @@
 
   <main>
     <form method="get" action="/alarms/history" class="filters">
+      <input type="hidden" name="size" value="{{.Pager.Size}}">
       <label>Period
         <select name="range">{{range .Ranges}}<option value="{{.Key}}" {{if eq .Key $.Range}}selected{{end}}>{{.Label}}</option>{{end}}</select>
       </label>
@@ -56,7 +57,6 @@
 
     <section>
       <div class="section-head"><h2>Event log</h2></div>
-      {{if gt .Total (len .Events)}}<p class="muted small">Showing the newest {{len .Events}} of {{.Total}} matching events — narrow the period or filters to see the others.</p>{{end}}
       <div class="table-scroll">
       <table class="pv-table">
         <thead>
@@ -83,6 +83,7 @@
         </tbody>
       </table>
       </div>
+      {{template "history_pager.html" .Pager}}
     </section>
   </main>
 </body>

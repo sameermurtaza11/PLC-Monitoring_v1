@@ -250,6 +250,34 @@ func TestIntegrationAlarmLifecycle(t *testing.T) {
 		}
 	})
 
+	t.Run("the event log can be read page by page", func(t *testing.T) {
+		all, total, err := s.AlarmEvents(ctx, HistoryFilter{Limit: 1000})
+		if err != nil || total != len(all) || total < 6 {
+			t.Fatalf("all events: %d of %d, %v", len(all), total, err)
+		}
+		var paged []int64
+		for off := 0; off < total; off += 4 {
+			part, n, err := s.AlarmEvents(ctx, HistoryFilter{Limit: 4, Offset: off})
+			if err != nil || n != total {
+				t.Fatalf("page at %d: %v, total %d", off, err, n)
+			}
+			for _, e := range part {
+				paged = append(paged, e.ID)
+			}
+		}
+		if len(paged) != len(all) {
+			t.Fatalf("pages hold %d events, want %d", len(paged), len(all))
+		}
+		for i := range all {
+			if paged[i] != all[i].ID {
+				t.Fatalf("event %d differs between the full list and the pages", i)
+			}
+		}
+		if past, n, _ := s.AlarmEvents(ctx, HistoryFilter{Limit: 4, Offset: total + 50}); len(past) != 0 || n != total {
+			t.Errorf("past the end: %d rows, total %d", len(past), n)
+		}
+	})
+
 	var open int
 	s.pool.QueryRow(ctx, `SELECT count(*) FROM active_alarms`).Scan(&open)
 	if open != 0 {

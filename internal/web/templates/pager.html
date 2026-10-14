@@ -1,0 +1,33 @@
+{{/* Pager of the live alarm list: buttons, handled by app.js (it keeps the filter and reopens the stream). */}}
+{{define "alarm_pager.html"}}
+<div class="pager-info" data-page="{{.Page}}" data-size="{{.Size}}">
+  {{if .Total}}Showing <strong>{{.From}}–{{.To}}</strong> of <strong>{{.Total}}</strong>{{else}}No alarms{{end}}
+</div>
+<nav class="pager-nav" aria-label="Alarm pages">
+  <button type="button" data-page="{{if .HasPrev}}{{.Page | dec}}{{end}}" {{if not .HasPrev}}disabled{{end}}>‹ Previous</button>
+  {{range .Window}}{{if eq . 0}}<span class="gap">…</span>{{else}}<button type="button" data-page="{{.}}" {{if eq . $.Page}}class="current" aria-current="page"{{end}}>{{.}}</button>{{end}}{{end}}
+  <button type="button" data-page="{{if .HasNext}}{{.Page | inc}}{{end}}" {{if not .HasNext}}disabled{{end}}>Next ›</button>
+</nav>
+<label class="pager-size">Rows per page
+  <select data-pager-size>{{range .Sizes}}<option {{if eq . $.Size}}selected{{end}}>{{.}}</option>{{end}}</select>
+</label>
+{{end}}
+
+{{/* Pager of the alarm history: plain links, so every page has its own address. */}}
+{{define "history_pager.html"}}
+<div class="pager">
+  <div class="pager-info">{{if .Total}}Showing <strong>{{.From}}–{{.To}}</strong> of <strong>{{.Total}}</strong> events{{else}}No events{{end}}</div>
+  <nav class="pager-nav" aria-label="Event log pages">
+    {{if .HasPrev}}<a href="{{.Link (.Page | dec)}}">‹ Previous</a>{{else}}<span class="disabled">‹ Previous</span>{{end}}
+    {{range .Window}}{{if eq . 0}}<span class="gap">…</span>{{else if eq . $.Page}}<span class="current" aria-current="page">{{.}}</span>{{else}}<a href="{{$.Link .}}">{{.}}</a>{{end}}{{end}}
+    {{if .HasNext}}<a href="{{.Link (.Page | inc)}}">Next ›</a>{{else}}<span class="disabled">Next ›</span>{{end}}
+  </nav>
+  <form method="get" action="/alarms/history" class="pager-size">
+    {{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}
+    <label>Rows per page
+      <select name="size" onchange="this.form.submit()">{{range .Sizes}}<option {{if eq . $.Size}}selected{{end}}>{{.}}</option>{{end}}</select>
+    </label>
+    <noscript><button type="submit">Apply</button></noscript>
+  </form>
+</div>
+{{end}}

@@ -74,6 +74,7 @@ type HistoryFilter struct {
 	PVID     int // events of every alarm of this PV
 	Event    string
 	Limit    int
+	Offset   int // rows to skip (pagination)
 }
 
 // AlarmEvents returns events newest first, plus how many match in total (so
@@ -92,7 +93,7 @@ func (s *Store) AlarmEvents(ctx context.Context, f HistoryFilter) (events []Hist
 	if err = s.pool.QueryRow(ctx, `SELECT count(*) FROM alarm_history h JOIN alarm_metadata m ON m.alarm_id = h.alarm_id`+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := s.pool.Query(ctx, historySelect+where+` ORDER BY h.event_id DESC LIMIT $6`, append(args, f.Limit)...)
+	rows, err := s.pool.Query(ctx, historySelect+where+` ORDER BY h.event_id DESC LIMIT $6 OFFSET $7`, append(args, f.Limit, f.Offset)...)
 	if err != nil {
 		return nil, 0, err
 	}

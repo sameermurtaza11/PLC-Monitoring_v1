@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/url"
+	"strconv"
 	"strings"
 
 	"PLC_Monitoring/internal/alarms"
@@ -124,4 +125,88 @@ type alarmSummary struct {
 type alarmRowsView struct {
 	Rows     []alarmRow
 	Filtered bool
+}
+
+// ---------------------------------------------------------------------
+// Pagination (alarm list and event log)
+// ---------------------------------------------------------------------
+
+var pageSizes = []int{25, 50, 100}
+
+// pageSpec is the page asked for: 1-based page number and rows per page.
+type pageSpec struct{ Page, Size int }
+
+// parsePage reads page and size from the query; anything invalid falls back
+// to page 1 and the default size.
+func parsePage(get func(string) string, defaultSize int) pageSpec {
+	p := pageSpec{Page: 1, Size: defaultSize}
+	if n, err := strconv.Atoi(get("page")); err == nil && n >= 1 && n < 1_000_000 {
+		p.Page = n
+	}
+	if n, err := strconv.Atoi(get("size")); err == nil {
+		for _, ok := range pageSizes {
+			if n == ok {
+				p.Size = n
+			}
+		}
+	}
+	return p
+}
+
+// pagerView describes the pager under a table.
+type pagerView struct {
+	Page, Pages, Size, Total, From, To int
+	Sizes                              []int
+	Base                               string       // query of the other parameters (history links)
+	Hidden                             []pagerParam // the same parameters as form fields (history size selector)
+}
+
+type pagerParam struct{ Name, Value string }
+
+// newPager clamps the requested page to the pages that exist.
+func newPager(p pageSpec, total int) pagerView {
+	v := pagerView{Size: p.Size, Total: total, Sizes: pageSizes, Pages: 1}
+	if total > 0 {
+		v.Pages = (total + p.Size - 1) / p.Size
+	}
+	v.Page = min(max(p.Page, 1), v.Pages)
+	if total > 0 {
+		v.From = (v.Page-1)*p.Size + 1
+		v.To = min(v.Page*p.Size, total)
+	}
+	return v
+}
+
+func (v pagerView) Offset() int   { return (v.Page - 1) * v.Size }
+func (v pagerView) HasPrev() bool { return v.Page > 1 }
+func (v pagerView) HasNext() bool { return v.Page < v.Pages }
+func (v pagerView) Multi() bool   { return v.Pages > 1 }
+
+// Window lists the page numbers to show: the first, the last and the pages
+// around the current one; 0 stands for a gap ("…").
+func (v pagerView) Window() []int {
+	shown := func(n int) bool { return n == 1 || n == v.Pages || (n >= v.Page-2 && n <= v.Page+2) }
+	var out []int
+	last := 0
+	for n := 1; n <= v.Pages; n++ {
+		// a gap of a single page is not worth a "…": show that page
+		if !shown(n) && !(shown(n-1) && shown(n+1)) {
+			continue
+		}
+		if last != 0 && n != last+1 {
+			out = append(out, 0)
+		}
+		out = append(out, n)
+		last = n
+	}
+	return out
+}
+
+// Link is the history page address for page n, keeping the other parameters.
+func (v pagerView) Link(n int) string {
+	q := v.Base
+	if q != "" {
+		q += "&"
+	}
+	return "?" + q + "page=" + strconv.Itoa(n) + "&size=" + strconv.Itoa(v.Size)
 }

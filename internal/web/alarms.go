@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,8 @@ func init() {
 	alarmFuncs := template.FuncMap{
 		"stateLabel": stateLabel,
 		"stateShort": stateShort,
+		"inc":        func(n int) int { return n + 1 },
+		"dec":        func(n int) int { return n - 1 },
 		"tsSec":      func(t time.Time) string { return t.Local().Format("2006-01-02 15:04:05") },
 		"tsSecP": func(t *time.Time) string {
 			if t == nil {
@@ -212,15 +215,20 @@ type alarmRow struct {
 
 // alarmRows returns the outstanding alarms that pass the filter, with the
 // current value of each PV.
-func (s *Server) alarmRows(f alarmFilter) alarmRowsView {
+func (s *Server) alarmRows(f alarmFilter, pg pageSpec) alarmRowsView {
 	v := alarmRowsView{Filtered: f.Active()}
 	if s.alarmView == nil {
 		return v
 	}
+	var matching []alarms.Entry
 	for _, e := range s.alarmView.Snapshot() {
-		if !f.Match(e) {
-			continue
+		if f.Match(e) {
+			matching = append(matching, e)
 		}
+	}
+	pager := newPager(pg, len(matching))
+	end := min(pager.Offset()+pager.Size, len(matching))
+	for _, e := range matching[min(pager.Offset(), len(matching)):end] {
 		r := alarmRow{E: e}
 		if s.live != nil {
 			if l, ok := s.live.Get(e.Def.PVID); ok {
@@ -233,8 +241,25 @@ func (s *Server) alarmRows(f alarmFilter) alarmRowsView {
 	return v
 }
 
-func (s *Server) renderAlarmRows(f alarmFilter) (string, error) {
-	return s.render("alarm_mgmt_rows.html", s.alarmRows(f))
+func (s *Server) renderAlarmRows(f alarmFilter, pg pageSpec) (string, error) {
+	return s.render("alarm_mgmt_rows.html", s.alarmRows(f, pg))
+}
+
+// alarmPager is the pager of the alarm list for the current filter.
+func (s *Server) alarmPager(f alarmFilter, pg pageSpec) pagerView {
+	total := 0
+	if s.alarmView != nil {
+		for _, e := range s.alarmView.Snapshot() {
+			if f.Match(e) {
+				total++
+			}
+		}
+	}
+	return newPager(pg, total)
+}
+
+func (s *Server) renderAlarmPager(f alarmFilter, pg pageSpec) (string, error) {
+	return s.render("alarm_pager.html", s.alarmPager(f, pg))
 }
 
 // unackCount is the number shown in the menu badge: alarms waiting for an
@@ -282,14 +307,15 @@ func (s *Server) alarmsPage(c *gin.Context) {
 		}
 	}
 	c.HTML(http.StatusOK, "alarms.html", s.pageData(c, "alarms", gin.H{
-		"Summary": s.alarmSummaryOf(f), "Filter": f, "Query": f.Query(),
+		"Summary": s.alarmSummaryOf(f), "Filter": f, "Query": joinQuery(f.Query(), pageQuery(c.Query)),
+		"Pager":      s.alarmPager(f, parsePage(c.Query, alarmPageSize)),
 		"Priorities": store.AlarmPriorities, "Types": store.AlarmTypes, "Classes": store.AlarmClasses,
 		"States": filterStates, "PLCs": plcs,
 	}))
 }
 
 func (s *Server) alarmRowsPartial(c *gin.Context) {
-	c.HTML(http.StatusOK, "alarm_mgmt_rows.html", s.alarmRows(parseAlarmFilter(c.Query)))
+	c.HTML(http.StatusOK, "alarm_mgmt_rows.html", s.alarmRows(parseAlarmFilter(c.Query), parsePage(c.Query, alarmPageSize)))
 }
 
 // ---------------------------------------------------------------------
@@ -521,7 +547,8 @@ var historyRanges = []struct{ Key, Label string }{
 
 var historySince = map[string]time.Duration{"1h": time.Hour, "24h": 24 * time.Hour, "7d": 7 * 24 * time.Hour, "30d": 30 * 24 * time.Hour}
 
-const historyLimit = 500
+// historyPageSize is the default number of events per page of the event log.
+const historyPageSize = 50
 
 func (s *Server) alarmHistory(c *gin.Context) {
 	rng := c.DefaultQuery("range", "24h")
@@ -531,7 +558,8 @@ func (s *Server) alarmHistory(c *gin.Context) {
 	} else {
 		rng = "all"
 	}
-	f := store.HistoryFilter{Since: since, Priority: c.Query("priority"), Event: c.Query("event"), Limit: historyLimit}
+	pg := parsePage(c.Query, historyPageSize)
+	f := store.HistoryFilter{Since: since, Priority: c.Query("priority"), Event: c.Query("event"), Limit: pg.Size, Offset: (pg.Page - 1) * pg.Size}
 	if f.Priority != "" && !inList(store.AlarmPriorities, f.Priority) {
 		f.Priority = ""
 	}
@@ -542,13 +570,35 @@ func (s *Server) alarmHistory(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	events, total, err := s.store.AlarmEvents(ctx, f)
+	pager := newPager(pg, total)
+	if err == nil && total > 0 && pager.Page != pg.Page { // the page asked for is past the end: show the last one
+		f.Offset = pager.Offset()
+		events, total, err = s.store.AlarmEvents(ctx, f)
+	}
+	// the filter, kept in every page link and in the page size selector
+	params := url.Values{"range": {rng}}
+	if f.Priority != "" {
+		params.Set("priority", f.Priority)
+	}
+	if f.Event != "" {
+		params.Set("event", f.Event)
+	}
+	if f.AlarmID != 0 {
+		params.Set("alarm", strconv.FormatInt(f.AlarmID, 10))
+	}
+	pager.Base = params.Encode()
+	for _, k := range []string{"range", "priority", "event", "alarm"} {
+		if v := params.Get(k); v != "" {
+			pager.Hidden = append(pager.Hidden, pagerParam{k, v})
+		}
+	}
 	if err == nil {
 		var stats store.AlarmStats
 		var defs []store.AlarmDef
 		if stats, err = s.store.AlarmStatistics(ctx, since); err == nil {
 			if defs, err = s.store.ListAlarmDefs(ctx); err == nil {
 				c.HTML(http.StatusOK, "alarm_history.html", s.pageData(c, "alarm_history", gin.H{
-					"Events": events, "Total": total, "Limit": historyLimit, "Stats": stats, "Defs": defs,
+					"Events": events, "Total": total, "Pager": pager, "Stats": stats, "Defs": defs,
 					"Range": rng, "Ranges": historyRanges, "Priority": f.Priority, "Priorities": store.AlarmPriorities,
 					"AlarmID": f.AlarmID, "Event": f.Event,
 					"EventTypes": []string{"ACTIVATED", "ACKNOWLEDGED", "RETURNED_TO_NORMAL", "SHELVED", "UNSHELVED"},
@@ -568,4 +618,30 @@ func inList(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// alarmPageSize is the default number of alarms per page.
+const alarmPageSize = 25
+
+// pageQuery returns the page and size parameters that were sent (to keep them
+// in the address of the initial rows).
+func pageQuery(get func(string) string) string {
+	v := url.Values{}
+	if p := get("page"); p != "" {
+		v.Set("page", p)
+	}
+	if sz := get("size"); sz != "" {
+		v.Set("size", sz)
+	}
+	return v.Encode()
+}
+
+func joinQuery(parts ...string) string {
+	var out []string
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, "&")
 }

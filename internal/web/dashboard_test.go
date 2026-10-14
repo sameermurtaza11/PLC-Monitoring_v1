@@ -431,3 +431,160 @@ func sampleOf(row store.LatestRow, value float64, ts time.Time) bus.Sample {
 func pageDataFor(s *Server, u *auth.User) gin.H {
 	return gin.H{"Page": "dashboard", "User": u, "Nav": navFor(u), "CSRF": "x", "Unack": s.unackCount(), "Ticker": s.tickerData()}
 }
+
+// ---------------------------------------------------------------------
+// Pagination
+// ---------------------------------------------------------------------
+
+func TestPageSpecFallsBackToSafeValues(t *testing.T) {
+	get := func(q string) func(string) string {
+		v, _ := url.ParseQuery(q)
+		return v.Get
+	}
+	for q, want := range map[string]pageSpec{
+		"": {1, 50}, "page=3&size=100": {3, 100}, "page=0": {1, 50}, "page=-4": {1, 50}, "page=abc": {1, 50},
+		"size=7": {1, 50}, "size=25": {1, 25}, "page=99999999999": {1, 50},
+	} {
+		if got := parsePage(get(q), 50); got != want {
+			t.Errorf("%q: %+v, want %+v", q, got, want)
+		}
+	}
+}
+
+func TestPagerArithmetic(t *testing.T) {
+	for _, c := range []struct {
+		page, size, total         int
+		wantPage, pages, from, to int
+	}{
+		{1, 25, 0, 1, 1, 0, 0}, {1, 25, 10, 1, 1, 1, 10}, {1, 25, 25, 1, 1, 1, 25}, {2, 25, 26, 2, 2, 26, 26},
+		{3, 25, 60, 3, 3, 51, 60}, {9, 25, 60, 3, 3, 51, 60}, // past the end → last page
+		{1, 100, 101, 1, 2, 1, 100},
+	} {
+		v := newPager(pageSpec{c.page, c.size}, c.total)
+		if v.Page != c.wantPage || v.Pages != c.pages || v.From != c.from || v.To != c.to {
+			t.Errorf("%+v: got page %d/%d rows %d–%d", c, v.Page, v.Pages, v.From, v.To)
+		}
+	}
+	v := newPager(pageSpec{2, 25}, 60)
+	if v.Offset() != 25 || !v.HasPrev() || !v.HasNext() || !v.Multi() {
+		t.Errorf("%+v", v)
+	}
+	if one := newPager(pageSpec{1, 25}, 5); one.Multi() || one.HasNext() || one.HasPrev() {
+		t.Error("a single page must not offer navigation")
+	}
+}
+
+func TestPagerWindowShowsFirstLastAndNeighboursWithGaps(t *testing.T) {
+	for _, c := range []struct {
+		page, pages int
+		want        []int
+	}{
+		{1, 1, []int{1}}, {1, 5, []int{1, 2, 3, 4, 5}}, {1, 12, []int{1, 2, 3, 0, 12}},
+		{6, 12, []int{1, 0, 4, 5, 6, 7, 8, 0, 12}}, {12, 12, []int{1, 0, 10, 11, 12}}, {4, 12, []int{1, 2, 3, 4, 5, 6, 0, 12}},
+	} {
+		got := pagerView{Page: c.page, Pages: c.pages}.Window()
+		if !equalInts(got, c.want) {
+			t.Errorf("page %d of %d: %v, want %v", c.page, c.pages, got, c.want)
+		}
+	}
+}
+
+func equalInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestAlarmListIsCutIntoPagesAfterFiltering(t *testing.T) {
+	var defs []store.AlarmDef
+	var occs []store.Occurrence
+	base := time.Now().Add(-time.Hour)
+	for i := 1; i <= 60; i++ {
+		prio := store.PriorityMinor
+		if i%3 == 0 {
+			prio = store.PriorityMajor
+		}
+		defs = append(defs, adef(int64(i), i, "HI", prio))
+		occs = append(occs, occ(int64(1000+i), int64(i), store.StateUnack, true, base.Add(time.Duration(i)*time.Second)))
+	}
+	s := viewServer(t, defs, occs)
+	count := func(v alarmRowsView) int { return len(v.Rows) }
+
+	first := s.alarmRows(alarmFilter{}, pageSpec{1, 25})
+	second := s.alarmRows(alarmFilter{}, pageSpec{2, 25})
+	third := s.alarmRows(alarmFilter{}, pageSpec{3, 25})
+	if count(first) != 25 || count(second) != 25 || count(third) != 10 {
+		t.Fatalf("pages hold %d, %d, %d rows, want 25, 25, 10", count(first), count(second), count(third))
+	}
+	seen := map[int64]bool{}
+	for _, v := range []alarmRowsView{first, second, third} {
+		for _, r := range v.Rows {
+			if seen[r.E.Occ.ID] {
+				t.Errorf("occurrence %d is on two pages", r.E.Occ.ID)
+			}
+			seen[r.E.Occ.ID] = true
+		}
+	}
+	if len(seen) != 60 {
+		t.Errorf("%d alarms across the pages, want all 60", len(seen))
+	}
+	// the order across pages is the list order: Major (every third alarm) first
+	if first.Rows[0].E.Def.Priority != store.PriorityMajor {
+		t.Error("page 1 must start with the most important alarms")
+	}
+	// a page past the end shows the last page, not nothing
+	if past := s.alarmRows(alarmFilter{}, pageSpec{50, 25}); count(past) != 10 {
+		t.Errorf("page past the end shows %d rows, want the last page (10)", count(past))
+	}
+	// paging applies to the FILTERED list
+	maj := alarmFilter{Priority: store.PriorityMajor}
+	if rows := s.alarmRows(maj, pageSpec{1, 25}); count(rows) != 20 {
+		t.Errorf("filtered page = %d rows, want 20", count(rows))
+	}
+	if p := s.alarmPager(maj, pageSpec{1, 25}); p.Total != 20 || p.Pages != 1 {
+		t.Errorf("filtered pager = %+v", p)
+	}
+	if p := s.alarmPager(alarmFilter{}, pageSpec{2, 25}); p.Total != 60 || p.Pages != 3 || p.From != 26 || p.To != 50 {
+		t.Errorf("pager = %+v", p)
+	}
+}
+
+func TestPagerTemplatesRender(t *testing.T) {
+	s := testServer(t)
+	v := newPager(pageSpec{3, 25}, 300)
+	html, err := s.render("alarm_pager.html", v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<strong>51–75</strong> of <strong>300</strong>", `data-page="2"`, `data-page="4"`, `class="current"`, "…", `data-pager-size`, `data-page="12"`} {
+		if !strings.Contains(html, want) {
+			t.Errorf("alarm pager lacks %q:\n%s", want, html)
+		}
+	}
+	first := newPager(pageSpec{1, 25}, 300)
+	if html, _ := s.render("alarm_pager.html", first); !strings.Contains(html, "disabled") {
+		t.Error("Previous must be disabled on the first page")
+	}
+
+	v.Base = "range=7d&priority=Major"
+	v.Hidden = []pagerParam{{"range", "7d"}, {"priority", "Major"}}
+	html, err = s.render("history_pager.html", v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`href="?range=7d&amp;priority=Major&amp;page=2&amp;size=25"`, `href="?range=7d&amp;priority=Major&amp;page=4&amp;size=25"`,
+		`name="priority" value="Major"`, "of <strong>300</strong> events"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("history pager lacks %q:\n%s", want, html)
+		}
+	}
+	if html, _ := s.render("history_pager.html", newPager(pageSpec{1, 50}, 0)); !strings.Contains(html, "No events") {
+		t.Error("empty log")
+	}
+}

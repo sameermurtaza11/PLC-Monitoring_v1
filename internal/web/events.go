@@ -39,7 +39,7 @@ type frame struct{ event, html string }
 //	/events                         dashboard rows ("rows") and their count ("summary"); optional ?q=text
 //	/events?pv=ID                   + the live block of that PV ("live") and its alarms ("pvalarms")
 //	/events?view=alarms             alarm list ("rows") and its counts ("summary");
-//	                                optional filter: priority, type, state, class, plc, q
+//	                                optional filter: priority, type, state, class, plc, q; paging: page, size
 //	/events?view=alarms&alarm=OCC   + that alarm's "detail" and "actions"
 //	/events?view=badge              only the global frames — for pages without live rows
 //
@@ -71,6 +71,7 @@ func (s *Server) events(c *gin.Context) {
 
 	user := auth.FromContext(c)
 	filter := parseAlarmFilter(c.Query)
+	pg := parsePage(c.Query, alarmPageSize)
 	pvf := parsePVFilter(c.Query)
 	var produce func(listChanged bool) []frame
 	var version func() [2]uint64
@@ -99,7 +100,7 @@ func (s *Server) events(c *gin.Context) {
 			if listChanged {
 				events = nil
 			}
-			return s.alarmFrames(c, id, user, &events, filter)
+			return s.alarmFrames(c, id, user, &events, filter, pg)
 		}
 	default:
 		c.String(http.StatusBadRequest, "unknown view")
@@ -234,13 +235,16 @@ func (s *Server) pvFrames(pvID int, f pvFilter, defs []store.AlarmDef) []frame {
 
 // alarmFrames: the alarm list, its counts and, for an open alarm detail, the
 // changing part of the modal and its action buttons.
-func (s *Server) alarmFrames(c *gin.Context, occ int64, user *auth.User, events *[]store.HistoryEvent, f alarmFilter) []frame {
+func (s *Server) alarmFrames(c *gin.Context, occ int64, user *auth.User, events *[]store.HistoryEvent, f alarmFilter, pg pageSpec) []frame {
 	out := s.globalFrames()
-	if rows, err := s.renderAlarmRows(f); err == nil {
+	if rows, err := s.renderAlarmRows(f, pg); err == nil {
 		out = append(out, frame{"rows", rows})
 	}
 	if sum, err := s.renderAlarmSummary(f); err == nil {
 		out = append(out, frame{"summary", sum})
+	}
+	if pager, err := s.renderAlarmPager(f, pg); err == nil {
+		out = append(out, frame{"pager", pager})
 	}
 	if occ == 0 {
 		return out
