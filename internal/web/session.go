@@ -41,6 +41,7 @@ func (s *Server) pageData(c *gin.Context, page string, extra gin.H) gin.H {
 		"CSRF":    auth.CSRFToken(c),
 		"Nav":     navFor(user),
 		"Unack":   s.unackCount(),
+		"Ticker":  s.tickerData(),
 	}
 	for k, v := range extra {
 		h[k] = v

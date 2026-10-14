@@ -9,30 +9,43 @@
   <script src="/static/echarts.min.js"></script>
   <script src="/static/app.js" defer></script>
 </head>
-<body>
+<body class="fit">
   {{template "nav" .}}
 
   <main>
-    <p class="live-line"><span id="live-state" class="badge none">connecting…</span></p>
-    <table class="pv-table">
+    <p class="live-line">
+      <span id="live-state" class="badge none">connecting…</span>
+      <span id="live-summary">{{if .Summary}}{{template "pv_summary.html" .Summary}}{{end}}</span>
+    </p>
+
+    <form id="live-filters" class="filters pv-filters" autocomplete="off" onsubmit="return false" role="search">
+      <label class="grow">Search
+        <input type="search" name="q" value="{{.Filter.Q}}" maxlength="80" placeholder="PV name, system, equipment, PLC or description">
+      </label>
+      <button type="button" id="live-filter-reset">Reset</button>
+    </form>
+
+    <div class="pv-table-wrap">
+    <table class="pv-table dash-table">
       <thead>
         <tr>
-          <th>PLC</th>
-          <th>Register</th>
+          <th class="col-sys">System Name</th>
+          <th class="col-plc">PLC Name</th>
+          <th class="col-eq">Equipment</th>
           <th>PV Name</th>
-          <th class="num">Raw</th>
+          <th class="col-desc">Description</th>
           <th class="num">Value</th>
-          <th>Unit</th>
           <th>Status</th>
-          <th>Updated</th>
+          <th class="col-upd">Last Updated</th>
           <th></th>
         </tr>
       </thead>
-      <!-- HTMX loads the initial rows once; app.js then keeps them current from the pushed /events stream. -->
-      <tbody id="live-rows" data-stream="/events" hx-get="/partials/pv-rows" hx-trigger="load" hx-swap="innerHTML">
+      <!-- HTMX loads the initial rows once; app.js then keeps them current (and filtered) from the pushed /events stream. -->
+      <tbody id="live-rows" data-stream="/events" hx-get="/partials/pv-rows{{if .Query}}?{{.Query}}{{end}}" hx-trigger="load" hx-swap="innerHTML">
         <tr><td colspan="9" class="muted">Loading…</td></tr>
       </tbody>
     </table>
+    </div>
   </main>
 
   <!-- PV detail modal. "More" loads /pv/{id} into #pv-detail, then opens it. -->
@@ -46,3 +59,5 @@
 
 </body>
 </html>
+
+{{define "pv_summary.html"}}{{if .Filtered}}<span class="count shown">Showing <strong>{{.Shown}}</strong> of <strong>{{.Total}}</strong> PVs</span>{{else}}<span class="count none"><strong>{{.Total}}</strong> PVs</span>{{end}}{{end}}

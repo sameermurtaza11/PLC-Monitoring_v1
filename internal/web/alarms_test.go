@@ -239,34 +239,6 @@ func TestEveryStreamCarriesTheBadgeAndPagesWithoutRowsGetTheirOwn(t *testing.T) 
 	}
 }
 
-// Alarm limits no longer live in pv_metadata: the dashboard status comes from
-// the alarm system's active alarms.
-func TestDashboardStatusComesFromTheActiveAlarm(t *testing.T) {
-	q := store.QualityGood
-	ts := time.Now()
-	row := store.LatestRow{PV: store.PV{ID: 1, Name: "P"}, Quality: &q, TS: &ts, ScanIntervalMS: 1000, Value: fp(90)}
-	major := &store.AlarmDef{AlarmType: store.AlarmHI, Priority: store.PriorityMajor}
-	critical := &store.AlarmDef{AlarmType: store.AlarmHIHI, Priority: store.PriorityCritical}
-	discrete := &store.AlarmDef{AlarmType: store.AlarmDiscrete, Priority: store.PriorityMinor}
-	for name, c := range map[string]struct {
-		alarm *store.AlarmDef
-		want  Status
-	}{
-		"no alarm": {nil, Status{"Normal", "ok"}}, "HI": {major, Status{"HI", "warn"}},
-		"HIHI critical": {critical, Status{"HIHI", "bad"}}, "discrete": {discrete, Status{"ALARM", "warn"}},
-	} {
-		if got := rowStatus(pvRow{LatestRow: row, Alarm: c.alarm}); got != c.want {
-			t.Errorf("%s: %+v, want %+v", name, got, c.want)
-		}
-	}
-	// a communication problem is shown before an alarm
-	bq := store.QualityCommFail
-	row.Quality = &bq
-	if got := rowStatus(pvRow{LatestRow: row, Alarm: critical}); got.Text != store.QualityCommFail {
-		t.Errorf("bad quality with an alarm: %+v", got)
-	}
-}
-
 func TestOnlyApprovedAlarmsDrawTheGaugeBands(t *testing.T) {
 	hi := sampleDef()
 	lo := sampleDef()

@@ -228,6 +228,28 @@ func TestIntegrationAlarmLifecycle(t *testing.T) {
 		l3.Release()
 	})
 
+	t.Run("events and metadata of one PV", func(t *testing.T) {
+		evs, total, err := s.AlarmEvents(ctx, HistoryFilter{PVID: pvID, Limit: 5})
+		if err != nil || total == 0 || len(evs) == 0 || len(evs) > 5 {
+			t.Fatalf("events of the PV: %d of %d, err %v", len(evs), total, err)
+		}
+		for _, e := range evs {
+			if e.PVName == "" || e.AlarmID != id {
+				t.Errorf("event of another PV: %+v", e)
+			}
+		}
+		if _, other, _ := s.AlarmEvents(ctx, HistoryFilter{PVID: pvID + 100000, Limit: 5}); other != 0 {
+			t.Errorf("a PV without alarms has %d events", other)
+		}
+		info, err := s.GetPVInfo(ctx, pvID)
+		if err != nil || info.PVID != pvID || info.PLCName == "" || info.PLCAddress == "" || info.CreatedAt.IsZero() {
+			t.Errorf("PV info = %+v, err %v", info, err)
+		}
+		if _, err := s.GetPVInfo(ctx, pvID+100000); err == nil {
+			t.Error("a missing PV must be an error")
+		}
+	})
+
 	var open int
 	s.pool.QueryRow(ctx, `SELECT count(*) FROM active_alarms`).Scan(&open)
 	if open != 0 {

@@ -1,7 +1,9 @@
-{{define "pv_detail.html"}}{{$pv := .PV}}
-<div class="detail" data-pv-id="{{$pv.ID}}">
-  <h2>{{$pv.Name}} <span class="muted">· {{$pv.PLCName}} · {{$pv.RegisterAddress}}</span></h2>
+{{define "pv_detail.html"}}{{$pv := .PV}}{{$info := .Info}}
+<div class="detail pv-detail" data-pv-id="{{$pv.ID}}">
+  <h2>{{$pv.Name}} <span class="muted">· {{$pv.PLCName}}{{if $pv.SystemName}} · {{$pv.SystemName}}{{end}}{{if $pv.Equipment}} · {{$pv.Equipment}}{{end}}</span></h2>
+  <p class="pv-desc">{{orDash $pv.Description}}</p>
 
+  <!-- 1. Live value: gauge / lamp and the current readings -->
   <div class="detail-top">
     <div class="gauge-wrap">
       {{if $pv.IsDigital}}
@@ -11,40 +13,98 @@
         <span class="lamp-dot"></span><span class="lamp-text">—</span>
       </div>
       {{else}}
-      <!-- Live gauge (ECharts). Scale = pv_min … pv_max from pv_metadata. -->
+      <!-- Live gauge (ECharts). Scale = pv_min … pv_max from pv_metadata; bands from the PV's alarms. -->
       <div id="pv-gauge" class="gauge"
            data-min="{{f $pv.Min}}" data-max="{{f $pv.Max}}" data-unit="{{$pv.Unit}}"
            data-alarm-low="{{rawValue .AlarmLow}}" data-alarm-high="{{rawValue .AlarmHigh}}"></div>
       {{end}}
+    </div>
+    <section class="live-section">
+      <h3>Current values</h3>
       <!-- Replaced by the pushed "live" event (app.js), which also moves the gauge needle. -->
       <div class="live-wrap">
         {{template "pv_live.html" $pv}}
       </div>
-    </div>
-
-    <dl class="meta">
-      <dt>PLC</dt><dd>{{$pv.PLCName}}</dd>
-      <dt>Register</dt><dd>{{$pv.RegisterAddress}} <span class="tag">{{kind $pv.RegisterAddress}}</span></dd>
-      <dt>System</dt><dd>{{orDash $pv.SystemName}}</dd>
-      <dt>Equipment</dt><dd>{{orDash $pv.Equipment}}</dd>
-      <dt>Description</dt><dd>{{orDash $pv.Description}}</dd>
-      {{if $pv.IsDigital}}
-      <dt>Type</dt><dd>Discrete input, 1 bit (FC02)</dd>
-      <dt>States</dt><dd>0 = {{$pv.State0Text}} · 1 = {{$pv.State1Text}}</dd>
-      <dt>History</dt><dd>stored on every state change (+1/min)</dd>
-      {{else}}
-      <dt>Type</dt><dd>{{if ge $pv.RegisterAddress 40001}}Holding register{{else}}Input register{{end}}, 16 bit</dd>
-      <dt>Unit</dt><dd>{{orDash $pv.Unit}}</dd>
-      <dt>Scaling</dt><dd>{{f $pv.Min}} … {{f $pv.Max}} (raw 0 … 65535)</dd>
-      <dt>History deadband</dt><dd>{{f $pv.Deadband}}</dd>
-      {{end}}
-      <dt>Alarms</dt>
-      <dd>{{range .Alarms}}<div><span class="tag">{{.AlarmType}}</span> {{.Trigger}} · {{.Priority}}{{if not .Evaluable}} <span class="muted">(not active: {{if eq .RationalizationStatus "DRAFT"}}draft{{else if not .Enabled}}disabled{{else}}check configuration{{end}})</span>{{end}}</div>{{else}}none configured{{end}}</dd>
-      <dt>Scan interval</dt><dd>{{$pv.ScanIntervalMS}} ms</dd>
-    </dl>
+    </section>
   </div>
 
-  <!-- Trend controls. Any change re-requests /pv/{id}/history via HTMX. -->
+  <!-- 2. What the PV is, how it is read and stored -->
+  <div class="pv-sections">
+    <section>
+      <h3>Identification</h3>
+      <dl class="meta">
+        <dt>System</dt><dd>{{orDash $pv.SystemName}}</dd>
+        <dt>PLC</dt><dd>{{$pv.PLCName}}</dd>
+        <dt>Equipment</dt><dd>{{orDash $pv.Equipment}}</dd>
+        <dt>PV name</dt><dd>{{$pv.Name}}</dd>
+        <dt>Description</dt><dd class="wrap">{{orDash $pv.Description}}</dd>
+        <dt>Register address</dt><dd>{{$pv.RegisterAddress}} <span class="tag">{{kind $pv.RegisterAddress}}</span></dd>
+        <dt>Signal</dt>
+        <dd>{{if $pv.IsDigital}}Discrete input, 1 bit (FC02){{else}}{{if ge $pv.RegisterAddress 40001}}Holding register{{else}}Input register{{end}}, 16 bit{{end}}</dd>
+      </dl>
+    </section>
+    <section>
+      <h3>Scaling and storage</h3>
+      <dl class="meta">
+        {{if $pv.IsDigital}}
+        <dt>States</dt><dd>0 = {{$pv.State0Text}} · 1 = {{$pv.State1Text}}</dd>
+        <dt>History</dt><dd>stored on every state change (+1 row/min)</dd>
+        {{else}}
+        <dt>Unit</dt><dd>{{orDash $pv.Unit}}</dd>
+        <dt>Minimum</dt><dd>{{f $pv.Min}} {{$pv.Unit}} <span class="muted">(raw 0)</span></dd>
+        <dt>Maximum</dt><dd>{{f $pv.Max}} {{$pv.Unit}} <span class="muted">(raw 65535)</span></dd>
+        <dt>History deadband</dt><dd>{{f $pv.Deadband}} {{$pv.Unit}} <span class="muted">{{if eq $pv.Deadband 0.0}}(every scan stored){{else}}(+1 row/min){{end}}</span></dd>
+        {{end}}
+        <dt>Acquired</dt><dd>{{if $info.Enabled}}<span class="badge ok">Enabled</span>{{else}}<span class="badge none">Disabled</span>{{end}}</dd>
+        <dt>Created</dt><dd>{{ts $info.CreatedAt}}</dd>
+        <dt>Last changed</dt><dd>{{ts $info.UpdatedAt}}</dd>
+      </dl>
+    </section>
+    <section>
+      <h3>PLC and communication</h3>
+      <dl class="meta">
+        <dt>PLC</dt><dd>{{$info.PLCName}} {{if $info.PLCEnabled}}<span class="badge ok">enabled</span>{{else}}<span class="badge none">disabled</span>{{end}}</dd>
+        <dt>Address</dt><dd>{{orDash $info.PLCAddress}} · unit {{$info.UnitID}}</dd>
+        <dt>Scan interval</dt><dd>{{$pv.ScanIntervalMS}} ms</dd>
+        <dt>Timeout</dt><dd>{{$info.TimeoutMS}} ms</dd>
+        <dt>PLC description</dt><dd class="wrap">{{orDash $info.PLCDescription}}</dd>
+      </dl>
+    </section>
+  </div>
+
+  <!-- 3. Alarms linked to this PV, with their current state (kept current by the pushed "pvalarms" event) -->
+  <section class="pv-block">
+    <h3>Alarms <span class="muted small">(configuration from Alarm Configuration; state from the alarm system)</span></h3>
+    <div id="pv-alarms">{{template "pv_alarms.html" .AlarmRows}}</div>
+  </section>
+
+  <section class="pv-block">
+    <h3>Recent alarm events</h3>
+    <div class="table-scroll">
+    <table class="pv-table small-table">
+      <thead><tr><th>Time</th><th>Alarm</th><th>Event</th><th>State change</th><th class="num">Value</th><th>User</th><th>Details</th></tr></thead>
+      <tbody>
+      {{range .Events}}
+      <tr>
+        <td class="muted">{{ts .TS}}</td>
+        <td><span class="tag">{{.AlarmType}}</span> {{.Message}}</td>
+        <td>{{eventLabel .Event}}</td>
+        <td>{{if .Prev}}{{.Prev}}{{else}}—{{end}} → {{if .Next}}{{.Next}}{{else}}(no change){{end}}</td>
+        <td class="num">{{eventValue .}}</td>
+        <td>{{if .UserName}}{{.UserName}}{{else}}<span class="muted">automatic</span>{{end}}</td>
+        <td class="wrap">{{.Details}}{{if .Reason}}{{if .Details}} · {{end}}Reason: {{.Reason}}{{end}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="7" class="muted">No alarm events recorded for this PV.</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <!-- 4. Trend and history. Any change re-requests /pv/{id}/history via HTMX. -->
+  <section class="pv-block">
+  <h3>Trend and history</h3>
   <form id="trend-form" class="trend-controls"
         hx-get="/pv/{{$pv.ID}}/history" hx-target="#history" hx-swap="innerHTML"
         hx-trigger="load, change from:#range-select, refresh, every 10s [document.getElementById('pv-modal').open]">
@@ -67,14 +127,58 @@
 
   <div id="pv-trend" class="trend" role="img" aria-label="History trend"></div>
   <div id="history"><p class="muted">Loading history…</p></div>
+  </section>
 </div>
 {{end}}
 
 {{define "pv_live.html"}}{{$s := rowStatus .}}
 <div class="current" data-value="{{rawValue .Value}}" data-quality="{{$s.Text}}">
-  <span class="badge {{$s.Class}}">{{$s.Text}}</span>
-  <span class="strong">{{display .}}{{if not .IsDigital}} {{.Unit}}{{end}}</span>
-  <div class="muted">Raw {{int .Raw}} · {{time .TS}}</div>
-  {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+  <p class="cur-line">
+    <span class="badge {{$s.Class}}{{if $s.Flash}} flash{{end}}"{{if $s.Title}} title="{{$s.Title}}"{{end}}>{{$s.Text}}</span>
+    <span class="strong cur-value">{{display .}}{{if not .IsDigital}} {{.Unit}}{{end}}</span>
+  </p>
+  <dl class="meta live-meta">
+    <dt>Engineering value</dt><dd>{{display .}}{{if not .IsDigital}} {{.Unit}}{{end}}</dd>
+    <dt>Raw value</dt><dd>{{int .Raw}}</dd>
+    <dt>Data quality</dt><dd>{{with .Quality}}{{.}}{{else}}—{{end}}</dd>
+    <dt>Last updated</dt><dd>{{time .TS}}</dd>
+    <dt>Last good value</dt><dd>{{time .LastGoodTS}}</dd>
+  </dl>
+  {{if .Error}}<div class="error small">{{.Error}}</div>{{end}}
+</div>
+{{end}}
+
+{{define "pv_alarms.html"}}
+<div class="table-scroll">
+<table class="pv-table small-table pv-alarm-table">
+  <thead>
+    <tr><th>Type</th><th>Condition</th><th>Priority</th><th class="num">Deadband</th><th class="num">On / off delay</th>
+        <th>Message</th><th>Configuration</th><th>Current state</th></tr>
+  </thead>
+  <tbody>
+  {{range .}}{{$d := .Def}}{{$cur := .Current}}
+  <tr>
+    <td><span class="tag">{{$d.AlarmType}}</span></td>
+    <td>{{$d.Trigger}}</td>
+    <td><span class="badge {{priorityClass $d.Priority}}">{{$d.Priority}}</span><div class="muted small">{{$d.AlarmClass}}</div></td>
+    <td class="num">{{if $d.Digital}}—{{else}}{{f $d.Deadband}} {{$d.PVUnit}}{{end}}</td>
+    <td class="num">{{$d.OnDelayS}} / {{$d.OffDelayS}} s</td>
+    <td class="wrap">{{$d.Message}}</td>
+    <td>{{if $d.Evaluable}}<span class="badge ok">In service</span>
+        {{else if eq $d.RationalizationStatus "DRAFT"}}<span class="badge warn">Draft</span>
+        {{else if not $d.Enabled}}<span class="badge none">Disabled</span>
+        {{else}}<span class="badge warn" title="{{range $d.Issues}}{{.}}. {{end}}">Check configuration</span>{{end}}</td>
+    <td>
+      {{if $cur}}
+      <span class="badge {{stateClass $cur.State}}{{if eq $cur.State "UNACK"}} flash{{end}}" title="{{stateLabel $cur.State}}">{{stateShort $cur.State}}</span>
+      <div class="muted small">since {{tsSec $cur.ActivatedAt}} · <a href="/alarms?alarm={{$cur.ID}}">details</a>{{if .Waiting}} · +{{.Waiting}} awaiting acknowledgement{{end}}</div>
+      {{else}}<span class="badge ok">Normal</span>{{end}}
+    </td>
+  </tr>
+  {{else}}
+  <tr><td colspan="8" class="muted">No alarms are configured for this PV.</td></tr>
+  {{end}}
+  </tbody>
+</table>
 </div>
 {{end}}

@@ -71,6 +71,7 @@ type HistoryFilter struct {
 	Since    time.Time
 	Priority string // priority at the time of the event
 	AlarmID  int64
+	PVID     int // events of every alarm of this PV
 	Event    string
 	Limit    int
 }
@@ -81,16 +82,17 @@ func (s *Store) AlarmEvents(ctx context.Context, f HistoryFilter) (events []Hist
 	where := ` WHERE ($1::timestamptz IS NULL OR h.event_timestamp >= $1)
 	             AND ($2 = '' OR h.priority = $2)
 	             AND ($3 = 0 OR h.alarm_id = $3)
-	             AND ($4 = '' OR h.event_type = $4)`
+	             AND ($4 = '' OR h.event_type = $4)
+	             AND ($5 = 0 OR m.pv_id = $5)`
 	var since *time.Time
 	if !f.Since.IsZero() {
 		since = &f.Since
 	}
-	args := []any{since, f.Priority, f.AlarmID, f.Event}
-	if err = s.pool.QueryRow(ctx, `SELECT count(*) FROM alarm_history h`+where, args...).Scan(&total); err != nil {
+	args := []any{since, f.Priority, f.AlarmID, f.Event, f.PVID}
+	if err = s.pool.QueryRow(ctx, `SELECT count(*) FROM alarm_history h JOIN alarm_metadata m ON m.alarm_id = h.alarm_id`+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := s.pool.Query(ctx, historySelect+where+` ORDER BY h.event_id DESC LIMIT $5`, append(args, f.Limit)...)
+	rows, err := s.pool.Query(ctx, historySelect+where+` ORDER BY h.event_id DESC LIMIT $6`, append(args, f.Limit)...)
 	if err != nil {
 		return nil, 0, err
 	}

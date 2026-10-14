@@ -36,14 +36,15 @@ type frame struct{ event, html string }
 // once and receives HTML blocks whenever they change — no polling, no database
 // query per browser.
 //
-//	/events                         dashboard rows ("rows")
-//	/events?pv=ID                   + the live block of that PV ("live")
+//	/events                         dashboard rows ("rows") and their count ("summary"); optional ?q=text
+//	/events?pv=ID                   + the live block of that PV ("live") and its alarms ("pvalarms")
 //	/events?view=alarms             alarm list ("rows") and its counts ("summary");
 //	                                optional filter: priority, type, state, class, plc, q
 //	/events?view=alarms&alarm=OCC   + that alarm's "detail" and "actions"
-//	/events?view=badge              only the menu badge ("badge") — for pages without live rows
+//	/events?view=badge              only the global frames — for pages without live rows
 //
-// Every stream also carries "badge": the number of alarms waiting for an acknowledgement.
+// Every stream also carries the global frames: "badge" (alarms waiting for an
+// acknowledgement) and "ticker" (the active alarms for the alarm ticker).
 //
 // Each connection reads the live module's memory itself, so a slow browser can
 // only delay its own connection: it is conflated to the newest state (nothing
@@ -70,15 +71,23 @@ func (s *Server) events(c *gin.Context) {
 
 	user := auth.FromContext(c)
 	filter := parseAlarmFilter(c.Query)
+	pvf := parsePVFilter(c.Query)
 	var produce func(listChanged bool) []frame
 	var version func() [2]uint64
 	switch view {
 	case "badge":
 		version = func() [2]uint64 { return [2]uint64{0, s.alarmVersion()} }
-		produce = func(bool) []frame { return []frame{s.badgeFrame()} }
+		produce = func(bool) []frame { return s.globalFrames() }
 	case "", "pv":
 		version = func() [2]uint64 { return [2]uint64{s.live.Version(), s.alarmVersion()} }
-		produce = func(bool) []frame { return append(s.pvFrames(int(id)), s.badgeFrame()) }
+		var defs []store.AlarmDef // the alarms of the open PV, re-read when the alarm list changes
+		var defsAt time.Time
+		produce = func(listChanged bool) []frame {
+			if id != 0 && s.store != nil && (defs == nil || listChanged || time.Since(defsAt) > 10*time.Second) {
+				defs, defsAt = s.defsOfPV(c, int(id)), time.Now()
+			}
+			return append(s.pvFrames(int(id), pvf, defs), s.globalFrames()...)
+		}
 	case "alarms":
 		if s.alarmView == nil {
 			c.String(http.StatusServiceUnavailable, "alarms are not available")
@@ -175,16 +184,48 @@ func (s *Server) events(c *gin.Context) {
 	}
 }
 
-// pvFrames: dashboard rows and, for an open PV detail, its live block.
-func (s *Server) pvFrames(pvID int) []frame {
+// defsOfPV reads the alarm definitions of one PV (nil on error).
+func (s *Server) defsOfPV(c *gin.Context, pvID int) []store.AlarmDef {
+	all, err := s.store.ListAlarmDefs(c.Request.Context())
+	if err != nil {
+		return nil
+	}
+	out := []store.AlarmDef{}
+	for _, d := range all {
+		if d.PVID == pvID {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// globalFrames are sent on every stream: the menu badge and the alarm ticker.
+func (s *Server) globalFrames() []frame {
+	out := []frame{s.badgeFrame()}
+	if html, err := s.render("ticker_items", s.tickerData()); err == nil {
+		out = append(out, frame{"ticker", html})
+	}
+	return out
+}
+
+// pvFrames: dashboard rows and, for an open PV detail, its live block and alarms table.
+func (s *Server) pvFrames(pvID int, f pvFilter, defs []store.AlarmDef) []frame {
 	var out []frame
-	if rows, err := s.render("pv_rows.html", s.pvRowViews()); err == nil {
+	if rows, err := s.render("pv_rows.html", s.pvRowViews(f)); err == nil {
 		out = append(out, frame{"rows", rows})
+	}
+	if sum, err := s.render("pv_summary.html", s.pvSummaryOf(f)); err == nil {
+		out = append(out, frame{"summary", sum})
 	}
 	if pvID != 0 {
 		if row, ok := s.live.Get(pvID); ok {
 			if html, err := s.render("pv_live.html", s.rowView(row)); err == nil {
 				out = append(out, frame{"live", html})
+			}
+		}
+		if defs != nil {
+			if html, err := s.render("pv_alarms.html", s.pvAlarmRows(defs)); err == nil {
+				out = append(out, frame{"pvalarms", html})
 			}
 		}
 	}
@@ -194,7 +235,7 @@ func (s *Server) pvFrames(pvID int) []frame {
 // alarmFrames: the alarm list, its counts and, for an open alarm detail, the
 // changing part of the modal and its action buttons.
 func (s *Server) alarmFrames(c *gin.Context, occ int64, user *auth.User, events *[]store.HistoryEvent, f alarmFilter) []frame {
-	out := []frame{s.badgeFrame()}
+	out := s.globalFrames()
 	if rows, err := s.renderAlarmRows(f); err == nil {
 		out = append(out, frame{"rows", rows})
 	}

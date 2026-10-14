@@ -147,15 +147,21 @@ func NewRouter(s *store.Store, onConfigChange func(), opt Options) *gin.Engine {
 // ---------------------------------------------------------------------
 
 func (s *Server) dashboard(c *gin.Context) {
-	c.HTML(http.StatusOK, "dashboard.html", s.pageData(c, "dashboard", nil))
+	f := parsePVFilter(c.Query)
+	data := gin.H{"Filter": f, "Query": f.Query()}
+	if s.live != nil {
+		data["Summary"] = s.pvSummaryOf(f)
+	}
+	c.HTML(http.StatusOK, "dashboard.html", s.pageData(c, "dashboard", data))
 }
 
 // pvRows returns the <tr> rows once, when the dashboard opens (the initial
 // values); afterwards the page is updated by the pushed /events stream. The
 // values come from the live module's memory, not from pv_latest.
 func (s *Server) pvRows(c *gin.Context) {
+	f := parsePVFilter(c.Query)
 	if s.live != nil {
-		c.HTML(http.StatusOK, "pv_rows.html", s.live.Snapshot())
+		c.HTML(http.StatusOK, "pv_rows.html", s.pvRowViews(f))
 		return
 	}
 	rows, err := s.store.LatestValues(c.Request.Context())
@@ -164,7 +170,13 @@ func (s *Server) pvRows(c *gin.Context) {
 		c.HTML(http.StatusOK, "pv_rows_error.html", err.Error())
 		return
 	}
-	c.HTML(http.StatusOK, "pv_rows.html", rows)
+	v := pvRowsView{Filtered: f.Active()}
+	for _, r := range rows {
+		if f.Match(r) {
+			v.Rows = append(v.Rows, pvRow{LatestRow: r})
+		}
+	}
+	c.HTML(http.StatusOK, "pv_rows.html", v)
 }
 
 // latestOf returns one PV's current values: from the live module when there is
@@ -222,6 +234,19 @@ func (s *Server) pvDetail(c *gin.Context) {
 		}
 	}
 	data["Alarms"], data["AlarmLow"], data["AlarmHigh"], data["AlarmState"] = defs, limitOf(defs, store.AlarmLO), limitOf(defs, store.AlarmHI), discreteState(defs)
+	data["AlarmRows"] = s.pvAlarmRows(defs)
+
+	// Stored metadata the live values do not carry, and the PV's recent alarm events.
+	info, err := s.store.GetPVInfo(c.Request.Context(), id)
+	if err != nil {
+		log.Printf("web: pv %d info: %v", id, err)
+	}
+	data["Info"] = info // zero value (shown as dashes) if it could not be read
+	if evs, _, err := s.store.AlarmEvents(c.Request.Context(), store.HistoryFilter{PVID: id, Limit: 15}); err != nil {
+		log.Printf("web: pv %d alarm events: %v", id, err)
+	} else {
+		data["Events"] = evs
+	}
 	c.HTML(http.StatusOK, "pv_detail.html", data)
 }
 
@@ -233,23 +258,25 @@ func (s *Server) pvDetail(c *gin.Context) {
 type Status struct {
 	Text  string
 	Class string // CSS class: ok | warn | bad | none
+	Title string // tooltip (alarm message, priority, state)
+	Flash bool   // an unacknowledged alarm blinks
 }
 
 // statusOf decides a PV's communication / data status: no data, bad quality,
 // stale, else Normal. Alarm conditions come from the alarm system (rowStatus).
 func statusOf(r store.LatestRow) Status {
 	if r.TS == nil || r.Quality == nil {
-		return Status{"No data", "none"}
+		return Status{Text: "No data", Class: "none"}
 	}
 	if *r.Quality != store.QualityGood {
-		return Status{*r.Quality, "bad"}
+		return Status{Text: *r.Quality, Class: "bad", Title: r.Error}
 	}
 	// No update for 3 scan intervals (min 5 s) → the value can't be trusted.
 	staleAfter := max(3*time.Duration(r.ScanIntervalMS)*time.Millisecond, 5*time.Second)
 	if time.Since(*r.TS) > staleAfter {
-		return Status{"STALE", "bad"}
+		return Status{Text: "STALE", Class: "bad", Title: "no update for 3 scan intervals"}
 	}
-	return Status{"Normal", "ok"}
+	return Status{Text: "Normal", Class: "ok"}
 }
 
 // fieldRef lets a template pass (form, field name) to the "field_error" block.

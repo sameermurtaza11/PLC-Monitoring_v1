@@ -1,23 +1,22 @@
 {{define "pv_rows.html"}}
-{{range .}}{{$s := rowStatus .}}
+{{range .Rows}}{{$s := rowStatus .}}
 <tr>
-  <td>{{.PLCName}}</td>
-  <td>{{.RegisterAddress}} <span class="tag">{{kind .RegisterAddress}}</span></td>
-  <td>{{.Name}}</td>
-  <td class="num">{{int .Raw}}</td>
+  <td class="col-sys">{{orDash .SystemName}}</td>
+  <td class="col-plc">{{.PLCName}}</td>
+  <td class="col-eq">{{orDash .Equipment}}</td>
+  <td class="strong">{{.Name}}</td>
+  <td class="col-desc"><div class="desc" title="{{.Description}}">{{orDash .Description}}</div></td>
   {{if .IsDigital}}
   <td class="num"><span class="state {{if and .Value (gt (deref .Value) 0.5)}}on{{else}}off{{end}}">{{display .}}</span></td>
-  <td></td>
   {{else}}
-  <td class="num strong">{{display .}}</td>
-  <td>{{.Unit}}</td>
+  <td class="num strong">{{display .}}{{if .Unit}} <span class="unit">{{.Unit}}</span>{{end}}</td>
   {{end}}
-  <td><span class="badge {{$s.Class}}">{{$s.Text}}</span></td>
-  <td class="muted">{{time .TS}}</td>
+  <td><span class="badge {{$s.Class}}{{if $s.Flash}} flash{{end}}"{{if $s.Title}} title="{{$s.Title}}"{{end}}>{{$s.Text}}</span></td>
+  <td class="muted col-upd">{{tsSecP .TS}}</td>
   <td><button type="button" hx-get="/pv/{{.ID}}" hx-target="#pv-detail" hx-swap="innerHTML">More</button></td>
 </tr>
 {{else}}
-<tr><td colspan="9" class="muted">No PVs configured. Add rows to plc_metadata and pv_metadata.</td></tr>
+<tr><td colspan="9" class="muted">{{if .Filtered}}No PVs match the search.{{else}}No PVs configured. Add rows to plc_metadata and pv_metadata.{{end}}</td></tr>
 {{end}}
 {{end}}
 

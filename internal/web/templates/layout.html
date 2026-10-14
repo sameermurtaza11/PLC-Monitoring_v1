@@ -16,4 +16,16 @@
   {{end}}
   <script src="/static/nav.js" defer></script>
 </header>
+{{if .User}}
+<!-- Global alarm ticker: fixed to the bottom of every page, fed by the same alarm list as the Alarms page.
+     nav.js scrolls it, pauses it under the pointer and keeps it current from the pushed stream. -->
+<div id="alarm-ticker" class="ticker" role="region" aria-label="Active alarms">
+  <a class="ticker-label" href="/alarms">ALARMS</a>
+  <div class="ticker-viewport" tabindex="0">
+    <div class="ticker-track"><div class="ticker-set">{{template "ticker_items" .Ticker}}</div></div>
+  </div>
+</div>
 {{end}}
+{{end}}
+
+{{define "ticker_items"}}{{range .Items}}<a class="tick tick-{{.Priority}} tick-{{.State}}" href="/alarms?alarm={{.OccID}}" title="{{.Cond}} · {{.Priority}} · {{stateLabel .State}}"><span class="tick-time">{{tickTime .Time}}</span><span class="tick-pri">{{.Priority}}</span><b>{{.PLC}} · {{.PV}}</b> <span class="tick-type">{{.Type}}</span> {{.Message}}{{if eq .State "UNACK"}} <em>UNACK</em>{{end}}</a>{{else}}<span class="tick tick-none">No active alarms</span>{{end}}{{if .More}}<span class="tick tick-info">+{{.More}} more active alarms – see Alarms</span>{{end}}{{if .Returned}}<a class="tick tick-info" href="/alarms?state=RTNUN">{{.Returned}} returned to normal – awaiting acknowledgement</a>{{end}}{{end}}

@@ -19,7 +19,7 @@
 
     <details id="filter-box" class="filter-box" open>
     <summary>Filters</summary>
-    <form id="alarm-filters" class="filters alarm-filters" autocomplete="off" onsubmit="return false">
+    <form id="live-filters" class="filters alarm-filters" autocomplete="off" onsubmit="return false">
       <label>Priority
         <select name="priority"><option value="">All</option>{{range .Priorities}}<option {{if eq . $.Filter.Priority}}selected{{end}}>{{.}}</option>{{end}}</select>
       </label>
@@ -38,7 +38,7 @@
       <label class="grow">Search
         <input type="search" name="q" value="{{.Filter.Q}}" maxlength="80" placeholder="PV, alarm text or PLC">
       </label>
-      <button type="button" id="alarm-filter-reset">Reset</button>
+      <button type="button" id="live-filter-reset">Reset</button>
     </form>
     </details>
 

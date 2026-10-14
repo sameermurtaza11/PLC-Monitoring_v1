@@ -62,6 +62,7 @@
     live: () => document.querySelector("#pv-detail .live-wrap"),
     detail: () => document.getElementById("alarm-dyn"),
     actions: () => document.getElementById("alarm-actions"),
+    pvalarms: () => document.getElementById("pv-alarms"),
   };
   // "badge" carries only a number for the menu badge (see nav.js).
   const badge = (e) => window.updateNavBadge && window.updateNavBadge(Number(e.data));
@@ -81,6 +82,7 @@
     stream.onopen = () => setLiveState("Live", "ok");
     stream.onerror = () => setLiveState("Disconnected — reconnecting…", "bad");
     stream.addEventListener("badge", badge);
+    stream.addEventListener("ticker", (e) => window.updateTicker && window.updateTicker(e.data));
     Object.keys(targets).forEach((name) => {
       stream.addEventListener(name, (e) => {
         const el = targets[name]();
@@ -99,7 +101,7 @@
   // shared link keeps it) and in the stream URL (the server filters what it
   // pushes, so the list stays filtered while it updates).
   // ------------------------------------------------------------------
-  const filterForm = () => document.getElementById("alarm-filters");
+  const filterForm = () => document.getElementById("live-filters");
 
   function filterQuery() {
     const f = filterForm();
@@ -131,7 +133,7 @@
       clearTimeout(timer);
       timer = setTimeout(applyFilter, 250); // typing: wait for a pause
     });
-    document.getElementById("alarm-filter-reset").addEventListener("click", () => {
+    document.getElementById("live-filter-reset").addEventListener("click", () => {
       f.reset();
       f.querySelectorAll("select").forEach((s) => { s.value = ""; });
       f.querySelector("[name=q]").value = "";
