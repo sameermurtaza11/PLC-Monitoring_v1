@@ -16,9 +16,8 @@
            data-min="{{f $pv.Min}}" data-max="{{f $pv.Max}}" data-unit="{{$pv.Unit}}"
            data-alarm-low="{{rawValue $pv.AlarmLow}}" data-alarm-high="{{rawValue $pv.AlarmHigh}}"></div>
       {{end}}
-      <!-- Refreshed every 2 s while the modal is open; app.js moves the gauge needle. -->
-      <div hx-get="/pv/{{$pv.ID}}/live" hx-trigger="every 2s [document.getElementById('pv-modal').open]"
-           hx-target="this" hx-swap="innerHTML" class="live-wrap">
+      <!-- Replaced by the pushed "live" event (app.js), which also moves the gauge needle. -->
+      <div class="live-wrap">
         {{template "pv_live.html" $pv}}
       </div>
     </div>

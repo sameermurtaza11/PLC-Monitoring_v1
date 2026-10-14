@@ -1,6 +1,8 @@
 // PLC Monitoring — client-side glue.
 //
 // HTMX does all the data fetching. This file only:
+//   0. keeps the dashboard rows and the open PV's live block current from the
+//      pushed /events stream (Server-Sent Events) — no polling
 //   1. opens the modal when PV detail HTML arrives
 //   2. draws the ECharts gauge and moves it when the live value refreshes
 //   3. draws the ECharts trend from the JSON inside the history partial
@@ -34,8 +36,45 @@
     const id = e.detail.target.id;
     if (id === "pv-detail") initDetail();
     else if (id === "history") drawTrend();
-    else if (e.detail.target.classList.contains("live-wrap")) updateGauge();
   });
+
+  // ------------------------------------------------------------------
+  // Pushed live updates. One EventSource per dashboard page; while a PV detail
+  // is open it is reopened with ?pv=ID so the server also pushes that PV's
+  // live block. After a reconnect the server sends the full current state.
+  // ------------------------------------------------------------------
+  let stream = null;
+  let streamPV = 0;
+  const liveRows = () => document.getElementById("pv-live-rows");
+
+  function setLiveState(text, cls) {
+    const el = document.getElementById("live-state");
+    if (!el) return;
+    el.textContent = text;
+    el.className = "badge " + cls;
+  }
+
+  function openStream(pvId) {
+    if (!liveRows()) return; // only the dashboard shows live values
+    if (stream) stream.close();
+    streamPV = pvId;
+    stream = new EventSource("/events" + (pvId ? "?pv=" + pvId : ""));
+    stream.onopen = () => setLiveState("Live", "ok");
+    stream.onerror = () => setLiveState("Disconnected — reconnecting…", "bad");
+    stream.addEventListener("rows", (e) => {
+      const tb = liveRows();
+      tb.innerHTML = e.data;
+      htmx.process(tb); // the "More" buttons are new elements
+    });
+    stream.addEventListener("live", (e) => {
+      const wrap = document.querySelector("#pv-detail .live-wrap");
+      if (!wrap) return;
+      wrap.innerHTML = e.data;
+      updateGauge();
+    });
+  }
+
+  window.addEventListener("DOMContentLoaded", () => openStream(0));
 
   // Direct link /pv/{id} redirects to /?pv={id}: open that PV's detail on load.
   window.addEventListener("DOMContentLoaded", () => {
@@ -46,7 +85,10 @@
   });
 
   document.addEventListener("close", (e) => {
-    if (e.target.id === "pv-modal") disposeCharts();
+    if (e.target.id === "pv-modal") {
+      disposeCharts();
+      if (streamPV) openStream(0);
+    }
   }, true);
 
   window.addEventListener("resize", () => {
@@ -62,6 +104,8 @@
 
   function initDetail() {
     disposeCharts();
+    const d = document.querySelector("#pv-detail .detail");
+    if (d && Number(d.dataset.pvId) !== streamPV) openStream(Number(d.dataset.pvId));
     initGauge();
     updateLamp();
     initCompare();

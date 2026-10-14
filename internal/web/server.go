@@ -18,6 +18,7 @@ import (
 
 	"PLC_Monitoring/internal/alarms"
 	"PLC_Monitoring/internal/auth"
+	"PLC_Monitoring/internal/live"
 	"PLC_Monitoring/internal/store"
 )
 
@@ -35,6 +36,9 @@ type Options struct {
 	// Pipeline returns the health of the sample pipeline (queues, drops,
 	// scan statistics) for GET /status/pipeline. May be nil.
 	Pipeline func() any
+	// Live is the live-data module: dashboard rows and the PV detail are served
+	// from its memory and pushed to browsers. May be nil (then the database is read).
+	Live *live.Module
 }
 
 type Server struct {
@@ -42,6 +46,8 @@ type Server struct {
 	auth           *auth.Service
 	cookie         auth.CookieOptions
 	pipeline       func() any
+	live           *live.Module
+	tmpl           *template.Template
 	alarmCfg       *alarms.ConfigService
 	onConfigChange func() // tells acquisition to reload PLC/PV config now
 }
@@ -52,7 +58,7 @@ func NewRouter(s *store.Store, onConfigChange func(), opt Options) *gin.Engine {
 		cookie.SameSite = http.SameSiteStrictMode
 	}
 	srv := &Server{
-		store: s, auth: auth.NewService(s, opt.SessionLifetime), cookie: cookie, pipeline: opt.Pipeline, alarmCfg: alarms.NewConfigService(s),
+		store: s, auth: auth.NewService(s, opt.SessionLifetime), cookie: cookie, pipeline: opt.Pipeline, live: opt.Live, alarmCfg: alarms.NewConfigService(s),
 		onConfigChange: onConfigChange,
 	}
 
@@ -63,6 +69,7 @@ func NewRouter(s *store.Store, onConfigChange func(), opt Options) *gin.Engine {
 
 	tmpl := template.Must(template.New("").Funcs(funcs).ParseFS(templateFS, "templates/*.html"))
 	r.SetHTMLTemplate(tmpl)
+	srv.tmpl = tmpl
 
 	static, _ := fs.Sub(staticFS, "static")
 	r.StaticFS("/static", http.FS(static))
@@ -70,7 +77,7 @@ func NewRouter(s *store.Store, onConfigChange func(), opt Options) *gin.Engine {
 	r.GET("/", srv.dashboard)
 	r.GET("/partials/pv-rows", srv.pvRows)
 	r.GET("/pv/:id", srv.pvDetail)
-	r.GET("/pv/:id/live", srv.pvLive)
+	r.GET("/events", srv.events) // pushed live updates (Server-Sent Events)
 	r.GET("/pv/:id/history", srv.pvHistory)
 	// Configuration (CRUD for plc_metadata / pv_metadata)
 	r.GET("/config", srv.configPage)
@@ -124,8 +131,14 @@ func (s *Server) dashboard(c *gin.Context) {
 	c.HTML(http.StatusOK, "dashboard.html", s.pageData(c, "dashboard", nil))
 }
 
-// pvRows is polled by HTMX every 2 s and returns only <tr> rows.
+// pvRows returns the <tr> rows once, when the dashboard opens (the initial
+// values); afterwards the page is updated by the pushed /events stream. The
+// values come from the live module's memory, not from pv_latest.
 func (s *Server) pvRows(c *gin.Context) {
+	if s.live != nil {
+		c.HTML(http.StatusOK, "pv_rows.html", s.live.Snapshot())
+		return
+	}
 	rows, err := s.store.LatestValues(c.Request.Context())
 	if err != nil {
 		log.Printf("web: latest values: %v", err)
@@ -133,6 +146,18 @@ func (s *Server) pvRows(c *gin.Context) {
 		return
 	}
 	c.HTML(http.StatusOK, "pv_rows.html", rows)
+}
+
+// latestOf returns one PV's current values: from the live module when there is
+// one, else from the database. pgx.ErrNoRows if the PV does not exist.
+func (s *Server) latestOf(c *gin.Context, id int) (store.LatestRow, error) {
+	if s.live != nil {
+		if row, ok := s.live.Get(id); ok {
+			return row, nil
+		}
+		return store.LatestRow{}, pgx.ErrNoRows
+	}
+	return s.store.LatestValue(c.Request.Context(), id)
 }
 
 func (s *Server) pvDetail(c *gin.Context) {
@@ -147,7 +172,7 @@ func (s *Server) pvDetail(c *gin.Context) {
 		c.Redirect(http.StatusFound, "/?pv="+strconv.Itoa(id))
 		return
 	}
-	row, err := s.store.LatestValue(c.Request.Context(), id)
+	row, err := s.latestOf(c, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		c.String(http.StatusNotFound, "PV not found")
 		return
@@ -166,27 +191,6 @@ func (s *Server) pvDetail(c *gin.Context) {
 		"Options": options,
 		"Ranges":  rangeOrder,
 	})
-}
-
-// pvLive returns only the live-value block of the modal (polled every 2 s;
-// the gauge reads its data-value after each swap).
-func (s *Server) pvLive(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		c.String(http.StatusBadRequest, "invalid PV id")
-		return
-	}
-	row, err := s.store.LatestValue(c.Request.Context(), id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		c.String(http.StatusNotFound, "PV not found")
-		return
-	}
-	if err != nil {
-		log.Printf("web: pv %d live: %v", id, err)
-		c.String(http.StatusInternalServerError, "database error")
-		return
-	}
-	c.HTML(http.StatusOK, "pv_live.html", row)
 }
 
 // ---------------------------------------------------------------------
@@ -342,7 +346,7 @@ func requestLogger() gin.HandlerFunc {
 		c.Next()
 		// Skip the 2-second polling noise unless it fails.
 		p := c.Request.URL.Path
-		if c.Writer.Status() < 400 && (p == "/partials/pv-rows" || strings.HasSuffix(p, "/live") || strings.HasSuffix(p, "/history")) {
+		if c.Writer.Status() < 400 && (p == "/partials/pv-rows" || strings.HasSuffix(p, "/history")) {
 			return
 		}
 		log.Printf("web: %d %s %s (%v)", c.Writer.Status(), c.Request.Method, c.Request.URL.Path, time.Since(start).Round(time.Millisecond))

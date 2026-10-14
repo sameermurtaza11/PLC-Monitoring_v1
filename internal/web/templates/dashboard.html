@@ -13,6 +13,7 @@
   {{template "nav" .}}
 
   <main>
+    <p class="live-line"><span id="live-state" class="badge none">connecting…</span></p>
     <table class="pv-table">
       <thead>
         <tr>
@@ -27,8 +28,8 @@
           <th></th>
         </tr>
       </thead>
-      <!-- HTMX replaces the rows every 2 s with /partials/pv-rows -->
-      <tbody hx-get="/partials/pv-rows" hx-trigger="load, every 2s" hx-swap="innerHTML">
+      <!-- HTMX loads the initial rows once; app.js then keeps them current from the pushed /events stream. -->
+      <tbody id="pv-live-rows" hx-get="/partials/pv-rows" hx-trigger="load" hx-swap="innerHTML">
         <tr><td colspan="9" class="muted">Loading…</td></tr>
       </tbody>
     </table>

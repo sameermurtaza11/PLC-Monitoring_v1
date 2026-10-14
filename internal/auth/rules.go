@@ -18,7 +18,7 @@ var Rules = map[string]Level{
 	"GET /":                 Authenticated,
 	"GET /partials/pv-rows": Authenticated,
 	"GET /pv/:id":           Authenticated,
-	"GET /pv/:id/live":      Authenticated,
+	"GET /events":           Authenticated, // pushed live updates (SSE)
 	"GET /pv/:id/history":   Authenticated,
 
 	// supervisors and administrators: PLC / PV configuration

@@ -4,7 +4,7 @@
 // sample bus (Go channels); main only creates, connects and stops them:
 //
 //	PLC → acquisition ──► bus ──► storage  (PostgreSQL history)
-//	                          ├─► live data  (dashboard, PV detail)   [later stage]
+//	                          ├─► live data  (dashboard, PV detail, pushed to browsers)
 //	                          └─► alarms     (alarm engine)           [later stage]
 //
 // The acquisition loop never waits for a consumer: every consumer has its own
@@ -27,6 +27,7 @@ import (
 	"PLC_Monitoring/internal/acquisition"
 	"PLC_Monitoring/internal/bus"
 	"PLC_Monitoring/internal/config"
+	"PLC_Monitoring/internal/live"
 	"PLC_Monitoring/internal/storage"
 	"PLC_Monitoring/internal/store"
 	"PLC_Monitoring/internal/web"
@@ -36,6 +37,15 @@ import (
 // continuously into its own bounded memory buffer, so this only has to absorb
 // short stalls (50 000 samples are minutes of normal traffic).
 const storageQueue = 50_000
+
+// Queue of the live-data consumer: it only keeps the newest value per PV, so it
+// drains fast; if it ever falls behind, the oldest queued samples are dropped
+// (and counted) because a newer value for the same PV follows anyway.
+// maxLiveClients bounds the browsers that may hold a pushed-updates connection.
+const (
+	liveQueue      = 10_000
+	maxLiveClients = 200
+)
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -62,15 +72,30 @@ func main() {
 		storageModule.Run()
 	}()
 
+	liveModule := live.New(db.LatestValues, sampleBus.Subscribe("live", liveQueue, bus.DropOldest), maxLiveClients)
+	// Initial values: PV configuration and last known values, read once. If the
+	// database cannot answer now, the module fills from the first samples.
+	if err := liveModule.Refresh(ctx); err != nil {
+		log.Printf("live: initial values not loaded: %v", err)
+	}
+	liveDone := make(chan struct{})
+	go func() {
+		defer close(liveDone)
+		liveModule.Run()
+	}()
+
 	// --- acquisition ---
 	// PLCs are NOT connected here. Each PLC worker connects (and reconnects)
 	// on its own, so an offline PLC never stops the application.
 	acqDone := make(chan struct{})
-	onConfigChange := func() {} // called by the web UI after a config save
+	onConfigChange := func() { go liveModule.Refresh(context.Background()) } // called by the web UI after a config save
 	var acqStats func() []acquisition.WorkerStats
 	if cfg.AcquireEnabled {
 		mgr := acquisition.NewManager(db, cfg.ConfigReload, sampleBus)
-		onConfigChange = mgr.Reload
+		onConfigChange = func() {
+			mgr.Reload()
+			go liveModule.Refresh(context.Background())
+		}
 		acqStats = mgr.Stats
 		go func() {
 			defer close(acqDone)
@@ -87,9 +112,10 @@ func main() {
 		CookieSecure:    cfg.CookieSecure,
 		SameSiteStrict:  cfg.CookieSameSite == "strict",
 		SessionLifetime: cfg.SessionHours,
+		Live:            liveModule,
 		// Health of the sample pipeline: queue sizes and every drop, for operators.
 		Pipeline: func() any {
-			out := map[string]any{"bus": sampleBus.Stats(), "storage": storageModule.Stats()}
+			out := map[string]any{"bus": sampleBus.Stats(), "storage": storageModule.Stats(), "live": liveModule.Stats()}
 			if acqStats != nil {
 				out["acquisition"] = acqStats()
 			}
@@ -113,4 +139,5 @@ func main() {
 	<-acqDone
 	sampleBus.Close()
 	<-storageDone
+	<-liveDone
 }
