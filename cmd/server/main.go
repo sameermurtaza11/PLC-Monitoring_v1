@@ -5,7 +5,7 @@
 //
 //	PLC → acquisition ──► bus ──► storage  (PostgreSQL history)
 //	                          ├─► live data  (dashboard, PV detail, pushed to browsers)
-//	                          └─► alarms     (alarm engine)           [later stage]
+//	                          └─► alarms     (alarm engine: activation, return to normal)
 //
 // The acquisition loop never waits for a consumer: every consumer has its own
 // bounded queue and an explicit overload policy (see internal/bus).
@@ -25,6 +25,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"PLC_Monitoring/internal/acquisition"
+	"PLC_Monitoring/internal/alarms"
 	"PLC_Monitoring/internal/bus"
 	"PLC_Monitoring/internal/config"
 	"PLC_Monitoring/internal/live"
@@ -44,6 +45,7 @@ const storageQueue = 50_000
 // maxLiveClients bounds the browsers that may hold a pushed-updates connection.
 const (
 	liveQueue      = 10_000
+	alarmQueue     = 20_000
 	maxLiveClients = 200
 )
 
@@ -84,6 +86,16 @@ func main() {
 		liveModule.Run()
 	}()
 
+	// The alarm engine reads the same samples as everyone else, never pv_latest.
+	// If it ever falls behind, the oldest queued samples are dropped and counted
+	// (its decisions are level-based, so a newer sample of the same PV follows).
+	alarmModule := alarms.New(alarms.FromStore(db), sampleBus.Subscribe("alarms", alarmQueue, bus.DropOldest), alarms.Options{})
+	alarmDone := make(chan struct{})
+	go func() {
+		defer close(alarmDone)
+		alarmModule.Run()
+	}()
+
 	// --- acquisition ---
 	// PLCs are NOT connected here. Each PLC worker connects (and reconnects)
 	// on its own, so an offline PLC never stops the application.
@@ -115,7 +127,7 @@ func main() {
 		Live:            liveModule,
 		// Health of the sample pipeline: queue sizes and every drop, for operators.
 		Pipeline: func() any {
-			out := map[string]any{"bus": sampleBus.Stats(), "storage": storageModule.Stats(), "live": liveModule.Stats()}
+			out := map[string]any{"bus": sampleBus.Stats(), "storage": storageModule.Stats(), "live": liveModule.Stats(), "alarms": alarmModule.Stats()}
 			if acqStats != nil {
 				out["acquisition"] = acqStats()
 			}
@@ -140,4 +152,5 @@ func main() {
 	sampleBus.Close()
 	<-storageDone
 	<-liveDone
+	<-alarmDone
 }
