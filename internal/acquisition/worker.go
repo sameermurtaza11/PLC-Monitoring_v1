@@ -3,50 +3,61 @@ package acquisition
 import (
 	"context"
 	"log"
-	"math"
+	"sync/atomic"
 	"time"
 
+	"PLC_Monitoring/internal/bus"
 	"PLC_Monitoring/internal/plc"
 	"PLC_Monitoring/internal/store"
 )
 
-const (
-	maxBackoff = 30 * time.Second
-	// History samples kept in memory while PostgreSQL is unreachable.
-	// ~40 bytes each → 200k ≈ 8 MB per PLC. Oldest are dropped beyond this.
-	maxPending = 200_000
-	// With a deadband, still store at least one history row per PV this often.
-	historyHeartbeat = 60 * time.Second
-)
+const maxBackoff = 30 * time.Second
 
-type lastStored struct {
-	value float64
-	ts    time.Time
+// reader is the part of a PLC connection a worker uses. *plc.Client is the
+// real one; tests use a fake.
+type reader interface {
+	Connect() error
+	Connected() bool
+	Close()
+	ReadBlock(b plc.Block) ([]uint16, error)
 }
 
+// WorkerStats is a snapshot of one PLC worker.
+type WorkerStats struct {
+	PLC         string
+	Scans       uint64        // completed scan cycles
+	Overruns    uint64        // scans that took longer than the scan interval
+	MissedTicks uint64        // scan ticks that could not run because the previous scan was still busy
+	LastScan    time.Duration // duration of the last scan
+	Published   uint64        // samples handed to the bus
+	Connected   bool
+}
+
+// worker owns one PLC connection and scans it on a timer. It only READS the
+// PLC and PUBLISHES samples on the bus: it never waits for the database, the
+// alarm engine or the browser, so a slow consumer cannot delay the next scan.
 type worker struct {
 	cfg    store.PLC
-	store  *store.Store
-	client *plc.Client
+	bus    *bus.Bus
+	client reader
 	blocks []plc.Block
 
 	backoff  time.Duration
 	nextDial time.Time
+	commDown bool // to log connection loss once, not every scan
 
-	pending    []store.Sample     // history not yet written (DB was down)
-	lastStored map[int]lastStored // per pv_id, for deadband filtering
-	commDown   bool               // to log connection loss once, not every scan
-	lastDBLog  time.Time          // throttles "database write failed" messages
+	scans, overruns, missed, published atomic.Uint64
+	lastScanNS                         atomic.Int64
+	connected                          atomic.Bool
+	lastOverrunLog                     time.Time
 }
 
-func newWorker(cfg store.PLC, s *store.Store) *worker {
-	w := &worker{
-		cfg:        cfg,
-		store:      s,
-		client:     plc.NewClient(cfg.IP, cfg.Port, cfg.UnitID, time.Duration(cfg.TimeoutMS)*time.Millisecond),
-		backoff:    time.Second,
-		lastStored: map[int]lastStored{},
-	}
+func newWorker(cfg store.PLC, b *bus.Bus) *worker {
+	return newWorkerWith(cfg, b, plc.NewClient(cfg.IP, cfg.Port, cfg.UnitID, time.Duration(cfg.TimeoutMS)*time.Millisecond))
+}
+
+func newWorkerWith(cfg store.PLC, b *bus.Bus, client reader) *worker {
+	w := &worker{cfg: cfg, bus: b, client: client, backoff: time.Second}
 
 	addrs := make([]int, len(cfg.PVs))
 	for i, pv := range cfg.PVs {
@@ -62,6 +73,14 @@ func newWorker(cfg store.PLC, s *store.Store) *worker {
 
 func (w *worker) logf(format string, args ...any) {
 	log.Printf("acquisition: ["+w.cfg.Name+"] "+format, args...)
+}
+
+// Stats returns a snapshot; safe to call from any goroutine.
+func (w *worker) Stats() WorkerStats {
+	return WorkerStats{
+		PLC: w.cfg.Name, Scans: w.scans.Load(), Overruns: w.overruns.Load(), MissedTicks: w.missed.Load(),
+		LastScan: time.Duration(w.lastScanNS.Load()), Published: w.published.Load(), Connected: w.connected.Load(),
+	}
 }
 
 func (w *worker) run(ctx context.Context) {
@@ -81,32 +100,60 @@ func (w *worker) run(ctx context.Context) {
 	defer ticker.Stop()
 
 	for {
+		start := time.Now()
 		w.scan(ctx)
+		w.recordScan(time.Since(start), interval)
 		select {
 		case <-ctx.Done():
-			w.flushOnStop()
 			return
 		case <-ticker.C:
 		}
 	}
 }
 
-// scan performs one read of all blocks and writes the result.
-func (w *worker) scan(ctx context.Context) {
-	var (
-		latest   []store.Sample
-		history  []store.Sample
-		failures []store.Failure
-	)
+// recordScan keeps the scan statistics and reports a scan that took longer
+// than the interval: the ticks that passed meanwhile are missed scans.
+func (w *worker) recordScan(took, interval time.Duration) {
+	w.scans.Add(1)
+	w.lastScanNS.Store(int64(took))
+	if took <= interval {
+		return
+	}
+	missed := uint64(took / interval)
+	w.overruns.Add(1)
+	w.missed.Add(missed)
+	if now := time.Now(); w.lastOverrunLog.IsZero() || now.Sub(w.lastOverrunLog) >= 30*time.Second {
+		w.lastOverrunLog = now
+		w.logf("scan took %v, longer than the %v interval: about %d scan(s) missed (slow PLC or network); %d overruns so far",
+			took.Round(time.Millisecond), interval, missed, w.overruns.Load())
+	}
+}
 
+func (w *worker) publish(s bus.Sample) {
+	w.bus.Publish(s)
+	w.published.Add(1)
+}
+
+// sampleOf starts a sample of one PV with the metadata every consumer needs.
+func (w *worker) sampleOf(pv store.PV, ts time.Time) bus.Sample {
+	return bus.Sample{PLCID: w.cfg.ID, PLCName: w.cfg.Name, ScanIntervalMS: w.cfg.ScanIntervalMS, PV: pv, TS: ts}
+}
+
+func (w *worker) failed(pv store.PV, ts time.Time, quality, msg string) bus.Sample {
+	s := w.sampleOf(pv, ts)
+	s.Quality, s.Error = quality, msg
+	return s
+}
+
+// scan reads all blocks once and publishes one sample per PV.
+func (w *worker) scan(ctx context.Context) {
 	if !w.ensureConnected() {
-		// Still unreachable: mark every PV as COMM_FAIL (dashboard shows it)
-		// and try to flush any buffered history.
+		// Still unreachable: every PV of this PLC is COMM_FAIL (consumers show
+		// it), and an alarm engine must not read this as a normal value.
 		now := time.Now().UTC()
 		for _, pv := range w.cfg.PVs {
-			failures = append(failures, store.Failure{PVID: pv.ID, TS: now, Quality: store.QualityCommFail, Error: "PLC not reachable"})
+			w.publish(w.failed(pv, now, store.QualityCommFail, "PLC not reachable"))
 		}
-		w.write(ctx, nil, nil, failures)
 		return
 	}
 
@@ -120,6 +167,7 @@ func (w *worker) scan(ctx context.Context) {
 				// Network-level failure: drop the socket and reconnect next scan.
 				quality = store.QualityCommFail
 				w.client.Close()
+				w.connected.Store(false)
 				w.logf("connection lost: %v", err)
 				w.commDown = true
 			} else {
@@ -127,7 +175,7 @@ func (w *worker) scan(ctx context.Context) {
 			}
 			for _, rest := range w.blocks[bi:] { // this block and (if comm lost) the rest
 				for _, idx := range rest.Items {
-					failures = append(failures, store.Failure{PVID: w.cfg.PVs[idx].ID, TS: ts, Quality: quality, Error: err.Error()})
+					w.publish(w.failed(w.cfg.PVs[idx], ts, quality, err.Error()))
 				}
 				if quality == store.QualityReadFail {
 					break // only this block failed; continue with the next
@@ -147,23 +195,21 @@ func (w *worker) scan(ctx context.Context) {
 			if !pv.IsDigital() {
 				value = Scale(raw, pv.Min, pv.Max)
 			}
-			s := store.Sample{PVID: pv.ID, TS: ts, Raw: raw, Value: value}
-			latest = append(latest, s)
-			if w.keepHistory(pv, s) {
-				history = append(history, s)
-			}
+			s := w.sampleOf(pv, ts)
+			s.Quality, s.Raw, s.Value = store.QualityGood, raw, value
+			w.publish(s)
 		}
 	}
-
-	w.write(ctx, latest, history, failures)
 }
 
 // ensureConnected returns true if the client is connected, dialling with
 // exponential backoff (1s, 2s, 4s … 30s) while the PLC is unreachable.
 func (w *worker) ensureConnected() bool {
 	if w.client.Connected() {
+		w.connected.Store(true)
 		return true
 	}
+	w.connected.Store(false)
 	if time.Now().Before(w.nextDial) {
 		return false
 	}
@@ -183,75 +229,6 @@ func (w *worker) ensureConnected() bool {
 	}
 	w.commDown = false
 	w.backoff = time.Second
+	w.connected.Store(true)
 	return true
-}
-
-// keepHistory decides whether a sample goes into pv_history.
-//   - Digital input: only when the state changes (+ heartbeat). Nothing is
-//     lost: every transition is stored with the timestamp of the scan that saw it.
-//   - Analog, deadband = 0: every scan.
-//   - Analog, deadband > 0: only changes >= deadband (+ heartbeat).
-//
-// Heartbeat = one row per minute even without change, so a flat line
-// is visibly "still alive" in the trend.
-func (w *worker) keepHistory(pv store.PV, s store.Sample) bool {
-	last, ok := w.lastStored[pv.ID]
-	if pv.IsDigital() && ok && s.Value == last.value && s.TS.Sub(last.ts) < historyHeartbeat {
-		return false
-	}
-	if !pv.IsDigital() && pv.Deadband > 0 && ok &&
-		math.Abs(s.Value-last.value) < pv.Deadband &&
-		s.TS.Sub(last.ts) < historyHeartbeat {
-		return false
-	}
-	w.lastStored[pv.ID] = lastStored{s.Value, s.TS}
-	return true
-}
-
-// write stores one scan. If PostgreSQL fails, history is buffered in memory
-// and retried with the next scan, so a short DB outage loses no samples.
-func (w *worker) write(ctx context.Context, latest, history []store.Sample, failures []store.Failure) {
-	all := append(w.pending, history...)
-
-	dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	if err := w.store.WriteScan(dbCtx, latest, all, failures); err != nil {
-		if ctx.Err() != nil {
-			w.pending = all // shutting down; flushOnStop will retry
-			return
-		}
-		if store.IsPermanent(err) {
-			// Retrying would fail forever and block all later writes.
-			w.logf("database rejected %d samples, dropped: %v", len(all), err)
-			w.pending = nil
-			return
-		}
-		if dropped := len(all) - maxPending; dropped > 0 {
-			all = all[dropped:]
-			w.logf("buffer full: dropped %d oldest history samples", dropped)
-		}
-		w.pending = all
-		if time.Since(w.lastDBLog) >= 30*time.Second {
-			w.logf("database write failed (%d samples buffered): %v", len(w.pending), err)
-			w.lastDBLog = time.Now()
-		}
-		return
-	}
-	w.lastDBLog = time.Time{}
-	if len(w.pending) > 0 {
-		w.logf("database recovered: %d buffered samples written", len(w.pending))
-	}
-	w.pending = nil
-}
-
-func (w *worker) flushOnStop() {
-	if len(w.pending) == 0 {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := w.store.WriteScan(ctx, nil, w.pending, nil); err != nil {
-		w.logf("shutdown: %d buffered samples lost: %v", len(w.pending), err)
-	}
 }

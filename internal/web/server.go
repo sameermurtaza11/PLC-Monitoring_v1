@@ -32,12 +32,16 @@ type Options struct {
 	CookieSecure    bool          // Secure flag of the session cookie (HTTPS deployments)
 	SameSiteStrict  bool          // SameSite=Strict instead of Lax
 	SessionLifetime time.Duration // 0 = auth.DefaultSessionLifetime
+	// Pipeline returns the health of the sample pipeline (queues, drops,
+	// scan statistics) for GET /status/pipeline. May be nil.
+	Pipeline func() any
 }
 
 type Server struct {
 	store          *store.Store
 	auth           *auth.Service
 	cookie         auth.CookieOptions
+	pipeline       func() any
 	alarmCfg       *alarms.ConfigService
 	onConfigChange func() // tells acquisition to reload PLC/PV config now
 }
@@ -48,7 +52,7 @@ func NewRouter(s *store.Store, onConfigChange func(), opt Options) *gin.Engine {
 		cookie.SameSite = http.SameSiteStrictMode
 	}
 	srv := &Server{
-		store: s, auth: auth.NewService(s, opt.SessionLifetime), cookie: cookie, alarmCfg: alarms.NewConfigService(s),
+		store: s, auth: auth.NewService(s, opt.SessionLifetime), cookie: cookie, pipeline: opt.Pipeline, alarmCfg: alarms.NewConfigService(s),
 		onConfigChange: onConfigChange,
 	}
 
@@ -106,6 +110,7 @@ func NewRouter(s *store.Store, onConfigChange func(), opt Options) *gin.Engine {
 	r.POST("/logout", auth.RequireCSRF(), srv.logout)
 
 	r.GET("/favicon.ico", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	r.GET("/status/pipeline", srv.pipelineStatus)
 	r.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 
 	return r

@@ -14,27 +14,34 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"sync"
 	"time"
 
+	"PLC_Monitoring/internal/bus"
 	"PLC_Monitoring/internal/store"
 )
 
 type Manager struct {
 	store   *store.Store
+	bus     *bus.Bus // every worker publishes its samples here
 	reload  time.Duration
+	mu      sync.Mutex       // guards workers (Run changes it, Stats reads it)
 	workers map[int]*running // key: plc_id
 	kick    chan struct{}    // Reload() → sync now instead of waiting for the ticker
 }
 
 type running struct {
+	worker      *worker
 	cancel      context.CancelFunc
 	done        chan struct{}
 	fingerprint string
 	name        string
 }
 
-func NewManager(s *store.Store, reload time.Duration) *Manager {
-	return &Manager{store: s, reload: reload, workers: map[int]*running{}, kick: make(chan struct{}, 1)}
+// NewManager creates the manager. The store is used only to read the PLC and
+// PV configuration; samples go to the bus, never to the database from here.
+func NewManager(s *store.Store, reload time.Duration, b *bus.Bus) *Manager {
+	return &Manager{store: s, bus: b, reload: reload, workers: map[int]*running{}, kick: make(chan struct{}, 1)}
 }
 
 // Run blocks until ctx is cancelled.
@@ -104,9 +111,10 @@ func (m *Manager) sync(ctx context.Context) {
 func (m *Manager) start(parent context.Context, p store.PLC, fp string) {
 	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
-	m.workers[p.ID] = &running{cancel: cancel, done: done, fingerprint: fp, name: p.Name}
-
-	w := newWorker(p, m.store)
+	w := newWorker(p, m.bus)
+	m.mu.Lock()
+	m.workers[p.ID] = &running{worker: w, cancel: cancel, done: done, fingerprint: fp, name: p.Name}
+	m.mu.Unlock()
 	go func() {
 		defer close(done)
 		w.run(ctx)
@@ -117,7 +125,21 @@ func (m *Manager) stop(id int) {
 	w := m.workers[id]
 	w.cancel()
 	<-w.done
+	m.mu.Lock()
 	delete(m.workers, id)
+	m.mu.Unlock()
+}
+
+// Stats returns the scan statistics of the running workers (safe to call
+// from any goroutine).
+func (m *Manager) Stats() []WorkerStats {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]WorkerStats, 0, len(m.workers))
+	for _, r := range m.workers {
+		out = append(out, r.worker.Stats())
+	}
+	return out
 }
 
 // fingerprint changes whenever any field of the PLC or any of its PVs changes.

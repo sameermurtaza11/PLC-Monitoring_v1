@@ -44,6 +44,9 @@ var Rules = map[string]Level{
 	"POST /config/alarms/:id":         Config,
 	"POST /config/alarms/:id/approve": AdminOnly,
 
+	// administrators only: health of the sample pipeline
+	"GET /status/pipeline": AdminOnly,
+
 	// administrators only: user management
 	"GET /config/users":          AdminOnly,
 	"GET /config/users/new":      AdminOnly,
