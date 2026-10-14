@@ -1,19 +1,53 @@
-# PLC Monitoring — Version 01
+# PLC Monitoring
 
-Instrument → PLC → Modbus TCP → Go acquisition → PostgreSQL → Gin → HTMX → ECharts
+Instrument → PLC → Modbus TCP → Go acquisition → in-process sample bus → storage · live data · alarm engine → Gin + HTMX web UI (PostgreSQL)
+
+A Go web application that reads PLCs over Modbus TCP, stores the values in PostgreSQL, shows them live and runs a basic
+alarm-management system designed along ISA-18.2 principles (rationalized alarm definitions, acknowledgement, shelving,
+event history, monitoring statistics).
+
+## Architecture
+
+The process is split into independent modules that talk through Go channels (no Redis, no database polling between modules).
+
+```
+PLC ─► acquisition ──► sample bus ──► storage     PostgreSQL (pv_latest, pv_history, failures)
+        (one worker      (bounded       ├─► live data   latest value per PV in memory ─► SSE ─► browsers
+         per PLC)         queue per     └─► alarms      alarm engine ─► active_alarms / alarm_history
+                          consumer)
+```
+
+- **Acquisition never waits** for the database, the alarm engine or a browser. Every sample (value, quality, timestamp,
+  sequence number) is published on the bus; each consumer has its own bounded queue and an explicit overload policy, and
+  every drop is counted and logged.
+- **Storage** batches writes, buffers up to 500 000 samples while the database is down, retries with backoff and
+  reports any loss. History rules (deadband, one row per minute) are unchanged.
+- **Live data** keeps the latest sample of every PV in memory and pushes changes to the browser with Server-Sent Events
+  (`/events`); `pv_latest` is only read once at start-up.
+- **Alarms** evaluate samples directly: limits, deadband, on/off delays on the sample timestamps; bad data neither
+  activates nor clears an alarm. Occurrences and their history rows are written in one transaction. One engine runs per
+  database (advisory lock).
+- `GET /status/pipeline` (administrators) shows queue sizes, drops, scan overruns and database health.
 
 ## Layout
 
 ```
-cmd/server/main.go          starts DB pool, acquisition manager, Gin server
-internal/config/            env / .env settings (DB URL, HTTP port) — NOT PLC config
-internal/store/             all SQL (config load, scan writes, dashboard, history, CRUD)
-internal/plc/               Modbus: address parsing (1xxxx/3xxxx/4xxxx), block reads, TCP client
-internal/acquisition/       Manager (one worker per PLC) + Worker (scan loop) + scaling
-internal/web/               Gin handlers, templates/, static/ (htmx + echarts served locally)
-migrations/001_v01_schema.sql
-migrations/002_digital_inputs_and_cleanup.sql
-sql/demo_multi_plc.sql      demo: 3 PLCs on 127.0.0.1/.2/.3 with AI + DI points
+cmd/server/            starts the modules and the web server (graceful shutdown)
+cmd/adduser/           creates a login account (first administrator)
+internal/config/       env / .env settings (database URL, HTTP port, cookies, shelving limit)
+internal/plc/          Modbus: address parsing, block reads, TCP client
+internal/acquisition/  manager + one worker per PLC; publishes samples
+internal/bus/          sample bus: per-consumer bounded queues, drop policies, statistics
+internal/storage/      database writer: batching, retry, buffering
+internal/live/         latest values in memory
+internal/alarms/       alarm engine, alarm list view, configuration validation
+internal/auth/         users, sessions, roles, the route access table (rules.go)
+internal/store/        all SQL
+internal/web/          Gin handlers, templates/, static/ (htmx + echarts served locally)
+migrations/            001 … 006 (see below)
+scripts/               seed_test_alarms.sql (sample alarms for the demo plant)
+sql/demo_multi_plc.sql demo: 3 PLCs on 127.0.0.1/.2/.3 with analog + digital points
+docs/                  alarm philosophy decisions
 ```
 
 ## Point types (derived from the address — Modbus convention)
@@ -24,169 +58,137 @@ sql/demo_multi_plc.sql      demo: 3 PLCs on 127.0.0.1/.2/.3 with AI + DI points
 | 30001–39999 | Input Register (AI) | 16 bit | FC04 | raw 0–65535 scaled to pv_min…pv_max |
 | 40001–49999 | Holding Register | 16 bit | FC03 | raw 0–65535 scaled to pv_min…pv_max |
 
-`PV = pv_min + (raw / 65535) × (pv_max − pv_min)` — digital inputs are not scaled.
+`PV = pv_min + (raw / 65535) × (pv_max − pv_min)` — digital inputs are not scaled. A digital PV stores a history row on
+every state change (+ one per minute).
 
-Digital inputs:
-- `state0_text` / `state1_text` — what 0 and 1 mean (OFF/ON, CLOSED/OPEN, …)
-- `alarm_state` — NULL = no alarm, 0 or 1 = alarm in that state
-- History is stored on **every state change** (+ one row per minute), not every scan.
-  Nothing is lost: each transition is stored with the timestamp of the scan that saw it.
-
-## Database tables (after 002)
+## Database
 
 | Table | Purpose |
 |---|---|
 | `plc_metadata` | one row per PLC: name, IP, port, unit id, scan interval, timeout, enabled |
-| `pv_metadata`  | one row per PV: `plc_id` + register, name, system, equipment, unit, scaling, history deadband, state texts (alarm limits and priorities are NOT here: see `alarm_metadata`) |
-| `pv_latest`    | last value + quality per PV (dashboard reads only this) |
-| `pv_history`   | timestamped samples, PK `(pv_id, ts)` |
+| `pv_metadata` | one row per PV: PLC + register, name, system, equipment, description, unit, scaling, **history** deadband, state texts, `deleted_at` (archived PVs) |
+| `pv_latest` / `pv_history` | last value + quality per PV / timestamped samples |
+| `alarm_metadata` | one approved alarm definition per PV and type (HIHI, HI, LO, LOLO, DISCRETE) incl. rationalization |
+| `active_alarms` | one row per outstanding occurrence (UNACK, ACKED, RTNUN, SHLVD) |
+| `alarm_history` | append-only event log (activated, acknowledged, returned to normal, shelved, unshelved) |
+| `alarm_audit_log` | append-only audit of configuration changes, approvals, deletions and refused actions |
+| `users` / `sessions` | logins |
 
-Constraints: `UNIQUE(plc_id, register_address)`, `UNIQUE(plc_id, pv_name)`, `pv_max > pv_min`,
-register must be 10001–19999, 30001–39999 or 40001–49999, `alarm_state IN (0,1)`.
+The alarm state rules are enforced by the database itself (allowed transitions only, a history row in the same transaction,
+append-only history and audit).
 
-Old prototype tables `pv_mapping`, `pv_data`, `raw_data` are removed by 002
-(matching `pv_data` rows are first moved into `pv_history`).
+### Migrations (safe to re-run; apply in order)
 
-## Setup / upgrade (Windows, VS Code terminal, inside D:\PLC_Monitoring)
+| File | What |
+|---|---|
+| `001_v01_schema.sql`, `002_digital_inputs_and_cleanup.sql` | base schema, digital inputs |
+| `003_users.sql` | users and sessions |
+| `004_alarms.sql` | alarm tables, triggers, audit log |
+| `005_move_alarm_columns.sql` | moves the old per-PV alarm settings out of `pv_metadata` into `alarm_metadata` (as drafts); `pv_metadata.deadband` stays (history deadband) |
+| `006_pv_archive.sql` | `pv_metadata.deleted_at`; name/register must be unique only among PVs that are not archived |
+
+## Setup (Windows, inside the project folder)
 
 ```powershell
-# 0. Backup of the old tables (002 drops them)
-pg_dump -U postgres -d plc_monitoring -t pv_mapping -t pv_data -t raw_data -f legacy_backup.sql
-
-# 1. Schema (both safe to re-run)
+$env:PGCLIENTENCODING = "UTF8"
 psql -U postgres -d plc_monitoring -f migrations/001_v01_schema.sql
 psql -U postgres -d plc_monitoring -f migrations/002_digital_inputs_and_cleanup.sql
+psql -U postgres -d plc_monitoring -f migrations/003_users.sql
+psql -U postgres -d plc_monitoring -f migrations/004_alarms.sql
+psql -U postgres -d plc_monitoring -f migrations/005_move_alarm_columns.sql
+psql -U postgres -d plc_monitoring -f migrations/006_pv_archive.sql
+psql -U postgres -d plc_monitoring -f sql/demo_multi_plc.sql                # demo PLCs and PVs
+psql -U postgres -d plc_monitoring -f scripts/seed_test_alarms.sql          # optional: sample alarms (test data)
 
-# 2. Demo: 3 PLCs with different IPs (AI + DI)
-psql -U postgres -d plc_monitoring -f sql/demo_multi_plc.sql
-
-# 3. Simulated PLCs 127.0.0.1 / .2 / .3 : 502
-cd D:\plc_simulator
-.\plc_service.ps1 start
-cd D:\PLC_Monitoring
-
-# 4. App
+go run ./cmd/adduser -user YOURNAME -role admin                              # first administrator (asks for the password)
 go test ./...
-go run ./cmd/server          # → http://localhost:8080
+go run ./cmd/server                                                          # http://localhost:8080
 ```
 
-`.\plc_service.ps1 status` / `stop` / `restart` manage all simulated PLCs.
-Every 127.x.x.x address is local loopback on Windows, so each simulated PLC has its own IP
-without extra network adapters. A real PLC just needs its real IP in `plc_metadata`.
+Back up first (`pg_dump`) before running 005 or 006 on a database with data. A PLC simulator for the demo
+(`plc_simulator.py`, `plc_service.ps1`) lives outside this repository. A real PLC only needs its real IP in `plc_metadata`.
 
-Optional: `copy .env.example .env` and set `DATABASE_URL` if your DB needs a password.
+### Settings (`.env` or environment; see `.env.example`)
 
-## Acquisition behaviour
-
-- One goroutine per enabled PLC; a failed PLC only affects its own PVs (`COMM_FAIL`).
-- Reconnect with backoff 1 s → 2 s → … → 30 s.
-- Adjacent points of the same type are read in one request
-  (registers: ≤125, gaps ≤8; discrete inputs: ≤2000 bits, gaps ≤64).
-- Modbus exception (e.g. illegal address) → `READ_FAIL`, connection kept.
-- Each scan = one DB transaction (latest upsert + history insert + failures).
-- DB down → history buffered in memory (≤ 200 000 samples per PLC), written on recovery.
-- Analog `deadband > 0` → history only when value moves ≥ deadband (+ one row per minute).
-- Saving in `/config` reloads acquisition immediately; direct SQL edits within `CONFIG_RELOAD` (10 s).
-- Dashboard status: `No data`, `COMM_FAIL`, `READ_FAIL`, `STALE`, `HIGH`, `LOW`, `ALARM` (digital), `Normal`.
+| Setting | Default | Meaning |
+|---|---|---|
+| `DATABASE_URL` | `postgres://postgres@localhost:5432/plc_monitoring` | PostgreSQL |
+| `HTTP_ADDR` | `:8080` | listen address |
+| `CONFIG_RELOAD` | `10s` | how often PLC/PV configuration is re-read |
+| `ACQUISITION` | `on` | `off` = web UI only |
+| `COOKIE_SECURE` / `COOKIE_SAMESITE` / `SESSION_HOURS` | `false` / `lax` / `12` | login cookie |
+| `ALARM_MAX_SHELVE` | none | longest time an alarm may be shelved (e.g. `8h`); the user always chooses a finite time |
 
 ## Web UI
 
 | Page | What it does |
 |---|---|
-| `/` Dashboard | latest value of every PV (DI as state text), refresh 2 s; **More** opens the PV detail |
-| PV detail | metadata; analog: live gauge; digital: status lamp; history trend + table; compare up to 4 PVs |
-| `/config` | add / edit / delete PLCs and PVs; the PV form switches between analog and digital fields by address |
+| `/` Dashboard | live table: System, PLC, Equipment, PV, Description, value with unit, Status, Last Updated; search; **More** opens the PV detail |
+| PV detail | live value (gauge or lamp), identification, scaling, PLC/communication, **all alarms of the PV with their state**, recent alarm events, trend and history, compare up to 4 PVs |
+| `/alarms` Alarms | outstanding alarms (live), filters (priority, type, state, class, PLC, search), pagination, **Acknowledge** and **More** (definition, rationalization, status, response time, event history, shelving) |
+| `/alarms/history` | alarm event log (filters, pagination) and monitoring statistics (activations, peak rate, time to acknowledge, most frequent alarms, standing alarms) |
+| `/config` | PLCs, PVs with their alarms in one form, alarm configuration and approval, users |
+| every page | menu badge with the number of alarms waiting for acknowledgement, and the **alarm ticker** at the bottom (active alarms, oldest first, pauses under the pointer) |
 
-### Trend rules
-- Ranges 15m … 7d, zoom, refresh 10 s. >1000 samples → averaged buckets with min/max
-  (for a DI, Avg = fraction of time ON).
-- Digital PVs are drawn as step lines.
-- Same unit → real values. Different units, or digital + analog → % of each PV's range
-  (digital: 0 % = OFF, 100 % = ON). One y-axis only.
+Dashboard **Status** is `No data`, `COMM_FAIL`, `READ_FAIL`, `STALE`, the type of the PV's active alarm (`HIHI`, `HI`, `LO`, `LOLO`,
+`ALARM`; shelved ones marked) or `Normal`. With several active alarms: not shelved first, then HIHI/LOLO, then priority,
+then unacknowledged, then the newest.
 
-### Delete rules
-- PLC with PVs → blocked. PV with history → blocked unless "Delete PV and its history" is confirmed.
-  Disabling keeps the history.
+### Alarm management (ISA-18.2 oriented)
+
+- States: `UNACK`, `ACKED`, `RTNUN` (returned to normal, unacknowledged), `SHLVD`; a completed occurrence leaves `active_alarms`
+  and stays in `alarm_history`. Priorities Minor / Major / Critical; classes PROCESS, EQUIPMENT_PROTECTION, ENVIRONMENTAL,
+  SAFETY_CRITICAL.
+- An alarm is evaluated only when it is **approved** by an administrator, enabled and consistent with its PV. Changing an approved
+  alarm's limit, delays, deadband, priority, class or instructions withdraws the approval.
+- Everyone logged in acknowledges. Supervisors and administrators shelve (reason and a finite duration are required; shelving
+  never hides the process condition, and the alarm returns automatically when the time ends). Refused attempts are audited.
+- Alarm history stores the setpoint and priority that applied at the time and the process value at the moment of each action.
+
+### PV and alarm configuration in one form
+
+The PV form has the PV fields first, then an **Enable Alarms** switch. Analog PVs get four independent alarms (HIHI, HI, LO, LOLO),
+digital PVs one discrete alarm (you choose the *normal* state; the other state is the alarm). PV and alarms are written in
+**one transaction**.
+
+- Editing updates the existing definitions (never duplicates). Switching an alarm off keeps the definition and its history; its abnormal
+  occurrences are ended and recorded as "taken out of service". The engine does the same for any alarm that stops being evaluated.
+- New and changed alarms are drafts until an administrator approves them (Alarm Configuration, or "Approve these alarms now" in the form).
+- **Delete PV** warns that its alarm configurations are deleted too and needs explicit confirmation. A PV with alarm history, outstanding
+  alarms or (unless you also delete them) stored values is **archived** (hidden, not acquired, name and register reusable); otherwise it is
+  erased completely. Alarm history and the audit log are never erased.
+
+### Sample alarms
+
+`scripts/seed_test_alarms.sql` configures realistic sample alarms for every PV of the demo plant (HI/HIHI near 80/90 % of the range,
+LO/LOLO near 20/10 %, deadband ≈ 2 %, delays that ride through noise). They are stored as approved with approver "test-data seed"
+and are **test data**: replace them with rationalized alarms before real use.
 
 ## Login, roles and users
 
-Every page needs a login (except `/login`, `/healthz` and the static files).
+Every page needs a login (except `/login`, `/healthz` and static files). Access is decided for every request from one table,
+`internal/auth/rules.go`; a route that is not listed is closed to everyone except administrators, and a test fails if a route has no rule.
 
-| Role | Dashboard, PV detail, history | Configuration (PLC / PV) | User management |
-|---|---|---|---|
-| operator | yes | no | no |
-| supervisor | yes | yes | no |
-| admin | yes | yes | yes |
+| Role | Dashboard, alarms, history | Acknowledge | Shelve | PV / PLC / alarm configuration | Approve alarms, users |
+|---|---|---|---|---|---|
+| operator | yes | yes | no | no | no |
+| supervisor | yes | yes | yes | yes | no |
+| admin | yes | yes | yes | yes | yes |
 
-Access is enforced on the server for every request, from one table: `internal/auth/rules.go`.
-A route that is not listed there is closed to everyone except administrators, and a test
-(`internal/web/routes_test.go`) fails if a route has no rule.
+There is no default account: create the first administrator with `go run ./cmd/adduser -user NAME -role admin` (password from
+`PLC_USER_PASSWORD` or typed, never a command-line argument). The session cookie is HTTP-only and holds a random token (only its hash
+is stored); the role is read from the database on every request; forms and HTMX requests carry a CSRF token.
 
-### First setup (there is no default account)
+**Known limitation:** passwords are stored in plain text (`users.password`), by decision for this version. All access goes through
+`internal/auth/password.go`, so moving to hashed passwords means changing that file and migrating the rows.
 
-```powershell
-$env:PGCLIENTENCODING = "UTF8"
-psql -U postgres -d plc_monitoring -f migrations/003_users.sql      # creates users + sessions (safe to re-run)
-go run ./cmd/adduser -user YOURNAME -role admin                      # asks for the password (8-128 chars)
-go run ./cmd/server
-```
+## Tests
 
-`adduser` reads the password from the `PLC_USER_PASSWORD` environment variable or asks for it;
-it is never a command-line argument. After that, administrators manage users in
-**Configuration → User Management** (create, edit, delete; the last administrator can be neither
-deleted nor demoted).
-
-### Sessions and cookies (`.env`)
-
-| Setting | Default | Meaning |
-|---|---|---|
-| `COOKIE_SECURE` | `false` | set `true` when served over HTTPS (keeps the cookie off plain HTTP) |
-| `COOKIE_SAMESITE` | `lax` | `lax` or `strict` |
-| `SESSION_HOURS` | `12` | how long a login lasts |
-
-The cookie is always HTTP-only and holds only a random token; the server stores its hash. The
-user's role is read from the database on every request, so a role change or a deleted account
-applies immediately. Logging in always issues a new session identifier; logout destroys the
-session on the server. Forms and HTMX requests carry a CSRF token.
-
-### Known limitation: passwords are stored in plain text (Version 01)
-
-`users.password` holds the password as typed, by decision, and administrators can see it in the
-edit form. Anyone who can read the database or a backup can read every password. All reading and
-writing goes through `internal/auth/password.go` (`StorePassword` / `VerifyPassword`), so moving to
-hashed passwords later means changing that file and migrating the existing rows.
-`last_online` is the time of the last successful login, not live presence.
-
-### Tests
-
-`go test ./...` runs the unit tests. The database test for user management is opt-in and only
-runs on a database whose name contains `scratch` or `test` (it empties `users`):
+`go test ./...` runs the unit tests (bus, storage, acquisition with a fake PLC, alarm engine, validation, web templates and streams).
+The database integration tests are opt-in and only run on a database whose name contains `scratch` or `test`; the alarm tests need a
+**fresh** database each (history cannot be cleaned): apply migrations 001–006 and load `plc_metadata` / `pv_metadata`, then
 
 ```powershell
-$env:PLC_TEST_DATABASE_URL = "postgres://postgres@localhost:5432/plc_users_scratch"
-go test ./internal/store/ -run Integration -v
+$env:PLC_TEST_DATABASE_URL = "postgres://postgres@localhost:5432/plc_xxx_scratch"
+go test ./internal/store -run TestIntegrationAlarmLifecycle -v      # also: …AlarmSchema, …AlarmConfiguration, …PVWithAlarms
 ```
-
-## Alarm settings and test alarms
-
-- `migrations/005_move_alarm_columns.sql` moves the old per-PV alarm settings (`priority`, `alarm_low`, `alarm_high`,
-  `alarm_state`) out of `pv_metadata`: they are copied to `alarm_metadata` as unapproved drafts, then the columns are dropped.
-  `pv_metadata.deadband` stays: it is the *history* deadband used by the storage module. Back up first (`pg_dump`).
-- `scripts/seed_test_alarms.sql` configures sample alarms for every PV of the demo plant so the alarm system can be tried
-  against live data (stored as approved, approver "test-data seed"). Test data only — replace with rationalized alarms.
-- Dashboard status and the PV gauge bands come from the alarm tables; the menu badge on **Alarms** shows how many alarms
-  are waiting for an acknowledgement (unacknowledged, or returned to normal but not yet acknowledged).
-
-## PV and alarm configuration in one form
-
-The Configuration page edits a PV and its alarms together (`Add PV` / `Edit`): the PV fields first, then an **Enable Alarms**
-switch. Analog PVs get four independent alarms (HIHI, HI, LO, LOLO), digital PVs one discrete alarm (you choose the *normal* state;
-the other state is the alarm). The data stays in two tables and is written in **one transaction**; a failure in either part changes nothing.
-
-- Editing updates the existing alarm definitions (one per PV and type, never duplicated). Switching an alarm (or all alarms) off keeps the
-  definition and its history; abnormal occurrences are ended and recorded as "taken out of service". The alarm engine also does this for any
-  alarm that stops being evaluated (disabled, approval withdrawn, PV deleted).
-- New and changed alarms are drafts until an administrator approves them (Alarm Configuration, or the "Approve these alarms now" box for administrators).
-- **Delete PV** shows a warning and needs an explicit confirmation. Alarm history, audit records, outstanding alarms and (unless you also delete
-  them) stored values are never erased: a PV with any of these is **archived** (`pv_metadata.deleted_at`, migration `006_pv_archive.sql`) — switched off,
-  hidden, its name and register free again — otherwise it is erased completely together with its alarm configurations.
