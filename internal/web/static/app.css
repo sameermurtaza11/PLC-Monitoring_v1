@@ -157,3 +157,71 @@ details.shelve .cfg-form { padding: 8px 0 4px; min-width: min(460px, 80vw); }
 /* menu badge: alarms waiting for an acknowledgement */
 .nav-badge { display: inline-block; min-width: 18px; margin-left: 6px; padding: 0 6px; border-radius: 9px; background: #dc2626; color: #fff; font-size: 12px; font-weight: 700; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
 .nav-badge[hidden] { display: none; }
+
+/* ---- alarm page: fit the screen (width and height) ---- */
+body.fit { height: 100vh; display: flex; flex-direction: column; }
+body.fit header { flex: none; }
+body.fit main { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding: 12px 16px; }
+body.fit .live-line, body.fit .filters, body.fit #alarm-msg { flex: none; }
+.alarm-table-wrap { flex: 1; min-height: 120px; overflow: auto; border: 1px solid var(--line); background: var(--panel); }
+.alarm-table-wrap .pv-table { border: 0; }
+.alarm-table thead th { position: sticky; top: 0; z-index: 1; box-shadow: 0 1px 0 var(--line); }
+.alarm-table td.wrap { white-space: normal; min-width: 150px; max-width: 280px; }
+.alarm-table td.state-cell { white-space: normal; }
+.alarm-table td.actions { display: table-cell; white-space: nowrap; }
+.alarm-table td.actions button + button { margin-left: 6px; }
+.count.shown { background: #1f2937; color: #fff; }
+.alarm-filters { margin-bottom: 10px; }
+.alarm-filters .grow { flex: 1 1 180px; min-width: 150px; }
+.alarm-filters input[type=search] { padding: 4px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font: inherit; width: 100%; }
+.alarm-filters select { max-width: 220px; }
+#alarm-msg:empty { display: none; }
+#alarm-msg .msg { margin: 0 0 8px; }
+@media (max-width: 1280px) { .alarm-table .col-trip { display: none; } }
+@media (max-width: 1100px) { .alarm-table .col-plc, .alarm-table .col-cond { display: none; } }
+@media (max-width: 560px) {
+  .alarm-table .col-act, .alarm-table .col-msg, .alarm-table .col-cur { display: none; }
+  .alarm-table th, .alarm-table td { padding: 4px 5px; }
+  .alarm-table td.col-pv { white-space: normal; overflow-wrap: anywhere; min-width: 70px; }
+  .alarm-table .badge { padding: 1px 6px; font-size: 11px; }
+  .alarm-table td.actions button { display: block; width: 100%; padding: 4px 6px; font-size: 12px; }
+  .alarm-table td.actions button + button { margin: 4px 0 0; }
+}
+.filter-box > summary { display: none; cursor: pointer; font-weight: 600; padding: 4px 0 8px; }
+@media (max-width: 760px) { .filter-box > summary { display: list-item; } }
+@media (max-width: 760px) {
+  body.fit main { padding: 8px; }
+  header { flex-wrap: wrap; gap: 4px 12px; padding: 10px 12px; }
+  header nav { margin-left: 0; flex-wrap: wrap; }
+  .account-nav { margin-left: auto; }
+  .alarm-filters { gap: 6px 10px; }
+  .alarm-filters label { flex: 1 1 calc(50% - 10px); min-width: 0; font-size: 12px; }
+  .alarm-filters label.grow { flex-basis: calc(100% - 70px); }
+  .live-line { gap: 4px 6px; }
+  .count { font-size: 12px; padding: 1px 8px; }
+  .alarm-filters select { max-width: none; width: 100%; }
+  .alarm-table th, .alarm-table td { padding: 5px 6px; }
+  .alarm-table td.actions { display: table-cell; }
+  .alarm-table td.actions button { padding: 3px 8px; }
+}
+
+/* ---- alarm detail dialog ---- */
+#alarm-modal { display: none; }
+#alarm-modal[open] { display: flex; flex-direction: column; }
+#alarm-modal .modal-head { flex: none; background: #fff; }
+#alarm-detail { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 20px 18px; }
+#alarm-detail h2 { margin: 0 0 6px; font-size: 18px; }
+#alarm-detail .meta { margin: 6px 0 10px; }
+#alarm-detail .meta dt { white-space: nowrap; }
+#alarm-detail .meta dd { min-width: 0; overflow-wrap: anywhere; }
+#alarm-detail .table-scroll { max-height: 220px; overflow: auto; border: 1px solid var(--line); }
+#alarm-detail .small-table { margin: 0; }
+#alarm-detail .small-table thead th { position: sticky; top: 0; z-index: 1; }
+#alarm-detail details.shelve .cfg-form { min-width: 0; width: min(520px, 100%); }
+#alarm-modal { max-height: min(94vh, 860px); }
+@media (max-width: 720px) {
+  #alarm-modal { width: 100vw; max-width: 100vw; max-height: 100vh; height: 100vh; border-radius: 0; }
+  #alarm-detail { padding: 10px 12px 16px; }
+  #alarm-detail .meta { grid-template-columns: 1fr; gap: 0; }
+  #alarm-detail .meta dt { margin-top: 6px; font-size: 12px; }
+}

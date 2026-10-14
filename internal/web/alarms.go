@@ -26,6 +26,14 @@ import (
 func init() {
 	alarmFuncs := template.FuncMap{
 		"stateLabel": stateLabel,
+		"stateShort": stateShort,
+		"tsSec":      func(t time.Time) string { return t.Local().Format("2006-01-02 15:04:05") },
+		"tsSecP": func(t *time.Time) string {
+			if t == nil {
+				return "—"
+			}
+			return t.Local().Format("2006-01-02 15:04:05")
+		},
 		"stateClass": stateClass,
 		"eventLabel": eventLabel,
 		"dur":        durText,
@@ -62,6 +70,15 @@ func stateLabel(s string) string {
 		return "Normal"
 	}
 	return s
+}
+
+// stateShort is the state as written in the list (the full wording is in the
+// tooltip and the detail dialog).
+func stateShort(s string) string {
+	if s == store.StateRTNUN {
+		return "Returned – unack."
+	}
+	return stateLabel(s)
 }
 
 func stateClass(s string) string {
@@ -192,26 +209,31 @@ type alarmRow struct {
 	Live *store.LatestRow
 }
 
-func (s *Server) alarmRows() []alarmRow {
+// alarmRows returns the outstanding alarms that pass the filter, with the
+// current value of each PV.
+func (s *Server) alarmRows(f alarmFilter) alarmRowsView {
+	v := alarmRowsView{Filtered: f.Active()}
 	if s.alarmView == nil {
-		return nil
+		return v
 	}
-	entries := s.alarmView.Snapshot()
-	rows := make([]alarmRow, len(entries))
-	for i, e := range entries {
-		rows[i].E = e
+	for _, e := range s.alarmView.Snapshot() {
+		if !f.Match(e) {
+			continue
+		}
+		r := alarmRow{E: e}
 		if s.live != nil {
 			if l, ok := s.live.Get(e.Def.PVID); ok {
 				l := l
-				rows[i].Live = &l
+				r.Live = &l
 			}
 		}
+		v.Rows = append(v.Rows, r)
 	}
-	return rows
+	return v
 }
 
-func (s *Server) renderAlarmRows() (string, error) {
-	return s.render("alarm_mgmt_rows.html", s.alarmRows())
+func (s *Server) renderAlarmRows(f alarmFilter) (string, error) {
+	return s.render("alarm_mgmt_rows.html", s.alarmRows(f))
 }
 
 // unackCount is the number shown in the menu badge: alarms waiting for an
@@ -223,12 +245,23 @@ func (s *Server) unackCount() int {
 	return s.alarmView.Counts().NeedsAck()
 }
 
-func (s *Server) renderAlarmSummary() (string, error) {
-	var c alarms.Counts
-	if s.alarmView != nil {
-		c = s.alarmView.Counts()
+func (s *Server) alarmSummaryOf(f alarmFilter) alarmSummary {
+	sum := alarmSummary{Filtered: f.Active()}
+	if s.alarmView == nil {
+		return sum
 	}
-	return s.render("alarm_summary.html", c)
+	for _, e := range s.alarmView.Snapshot() {
+		sum.Total++
+		if f.Match(e) {
+			sum.Shown++
+		}
+	}
+	sum.Counts = s.alarmView.Counts()
+	return sum
+}
+
+func (s *Server) renderAlarmSummary(f alarmFilter) (string, error) {
+	return s.render("alarm_summary.html", s.alarmSummaryOf(f))
 }
 
 // ---------------------------------------------------------------------
@@ -236,15 +269,26 @@ func (s *Server) renderAlarmSummary() (string, error) {
 // ---------------------------------------------------------------------
 
 func (s *Server) alarmsPage(c *gin.Context) {
-	var counts alarms.Counts
-	if s.alarmView != nil {
-		counts = s.alarmView.Counts()
+	f := parseAlarmFilter(c.Query)
+	var plcs []string
+	if s.store != nil {
+		if list, err := s.store.ListPLCs(c.Request.Context()); err == nil {
+			for _, p := range list {
+				plcs = append(plcs, p.Name)
+			}
+		} else {
+			log.Printf("web: alarm filter PLC list: %v", err)
+		}
 	}
-	c.HTML(http.StatusOK, "alarms.html", s.pageData(c, "alarms", gin.H{"Counts": counts}))
+	c.HTML(http.StatusOK, "alarms.html", s.pageData(c, "alarms", gin.H{
+		"Summary": s.alarmSummaryOf(f), "Filter": f, "Query": f.Query(),
+		"Priorities": store.AlarmPriorities, "Types": store.AlarmTypes, "Classes": store.AlarmClasses,
+		"States": filterStates, "PLCs": plcs,
+	}))
 }
 
 func (s *Server) alarmRowsPartial(c *gin.Context) {
-	c.HTML(http.StatusOK, "alarm_mgmt_rows.html", s.alarmRows())
+	c.HTML(http.StatusOK, "alarm_mgmt_rows.html", s.alarmRows(parseAlarmFilter(c.Query)))
 }
 
 // ---------------------------------------------------------------------

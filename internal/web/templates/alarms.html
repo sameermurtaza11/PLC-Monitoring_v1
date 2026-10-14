@@ -8,37 +8,65 @@
   <script src="/static/htmx.min.js"></script>
   <script src="/static/app.js" defer></script>
 </head>
-<body hx-headers='{"X-CSRF-Token": "{{.CSRF}}"}'>
+<body class="fit" hx-headers='{"X-CSRF-Token": "{{.CSRF}}"}'>
   {{template "nav" .}}
 
   <main>
     <p class="live-line">
       <span id="live-state" class="badge none">connecting…</span>
-      <span id="live-summary">{{template "alarm_summary.html" .Counts}}</span>
+      <span id="live-summary">{{template "alarm_summary.html" .Summary}}</span>
     </p>
+
+    <details id="filter-box" class="filter-box" open>
+    <summary>Filters</summary>
+    <form id="alarm-filters" class="filters alarm-filters" autocomplete="off" onsubmit="return false">
+      <label>Priority
+        <select name="priority"><option value="">All</option>{{range .Priorities}}<option {{if eq . $.Filter.Priority}}selected{{end}}>{{.}}</option>{{end}}</select>
+      </label>
+      <label>Type
+        <select name="type"><option value="">All</option>{{range .Types}}<option {{if eq . $.Filter.Type}}selected{{end}}>{{.}}</option>{{end}}</select>
+      </label>
+      <label>State
+        <select name="state"><option value="">All</option>{{range .States}}<option value="{{.Value}}" {{if eq .Value $.Filter.State}}selected{{end}}>{{.Label}}</option>{{end}}</select>
+      </label>
+      <label>Class
+        <select name="class"><option value="">All</option>{{range .Classes}}<option {{if eq . $.Filter.Class}}selected{{end}}>{{.}}</option>{{end}}</select>
+      </label>
+      <label>PLC
+        <select name="plc"><option value="">All</option>{{range .PLCs}}<option {{if eq . $.Filter.PLC}}selected{{end}}>{{.}}</option>{{end}}</select>
+      </label>
+      <label class="grow">Search
+        <input type="search" name="q" value="{{.Filter.Q}}" maxlength="80" placeholder="PV, alarm text or PLC">
+      </label>
+      <button type="button" id="alarm-filter-reset">Reset</button>
+    </form>
+    </details>
+
     <!-- Result of Acknowledge / Shelve / Unshelve lands here -->
     <div id="alarm-msg" aria-live="polite"></div>
 
-    <table class="pv-table">
+    <div class="alarm-table-wrap">
+    <table class="pv-table alarm-table">
       <thead>
         <tr>
           <th>Priority</th>
           <th>State</th>
-          <th>Activated</th>
-          <th>PLC</th>
-          <th>PV Name</th>
-          <th>Alarm</th>
-          <th>Condition</th>
-          <th class="num">Value at activation</th>
-          <th class="num">Current value</th>
+          <th class="col-act">Activated</th>
+          <th class="col-plc">PLC</th>
+          <th class="col-pv">PV Name</th>
+          <th class="col-msg">Alarm</th>
+          <th class="col-cond">Condition</th>
+          <th class="num col-trip">Trip value</th>
+          <th class="num col-cur">Current</th>
           <th></th>
         </tr>
       </thead>
-      <!-- HTMX loads the initial rows once; app.js then keeps them current from the pushed /events stream. -->
-      <tbody id="live-rows" data-stream="/events?view=alarms" hx-get="/partials/alarm-rows" hx-trigger="load" hx-swap="innerHTML">
+      <!-- HTMX loads the initial rows once; app.js then keeps them current (and filtered) from the pushed /events stream. -->
+      <tbody id="live-rows" data-stream="/events?view=alarms" hx-get="/partials/alarm-rows{{if .Query}}?{{.Query}}{{end}}" hx-trigger="load" hx-swap="innerHTML">
         <tr><td colspan="10" class="muted">Loading…</td></tr>
       </tbody>
     </table>
+    </div>
   </main>
 
   <!-- Alarm detail modal. "More" loads /alarm/{occurrence} into #alarm-detail, then opens it. -->
@@ -53,33 +81,34 @@
 </html>
 
 {{define "alarm_summary.html"}}
-<span class="count bad">Unacknowledged <strong>{{.Unack}}</strong></span>
-<span class="count warn">Returned to normal, unacknowledged <strong>{{.Returned}}</strong></span>
-<span class="count info">Acknowledged <strong>{{.Acked}}</strong></span>
-<span class="count none">Shelved <strong>{{.Shelved}}</strong></span>
+<span class="count bad">Unacknowledged <strong>{{.Counts.Unack}}</strong></span>
+<span class="count warn">Returned to normal, unacknowledged <strong>{{.Counts.Returned}}</strong></span>
+<span class="count info">Acknowledged <strong>{{.Counts.Acked}}</strong></span>
+<span class="count none">Shelved <strong>{{.Counts.Shelved}}</strong></span>
+{{if .Filtered}}<span class="count shown">Showing <strong>{{.Shown}}</strong> of <strong>{{.Total}}</strong></span>{{end}}
 {{end}}
 
 {{define "alarm_mgmt_rows.html"}}
-{{range .}}{{$d := .E.Def}}{{$o := .E.Occ}}
+{{range .Rows}}{{$d := .E.Def}}{{$o := .E.Occ}}
 <tr class="al-{{$o.State}}">
   <td><span class="badge {{priorityClass $d.Priority}}">{{$d.Priority}}</span></td>
-  <td>
-    <span class="badge {{stateClass $o.State}}{{if eq $o.State "UNACK"}} flash{{end}}">{{stateLabel $o.State}}</span>
-    {{if eq $o.State "SHLVD"}}<div class="muted small">until {{time $o.ShelvedExpiry}}</div>{{end}}
+  <td class="state-cell">
+    <span class="badge {{stateClass $o.State}}{{if eq $o.State "UNACK"}} flash{{end}}" title="{{stateLabel $o.State}}">{{stateShort $o.State}}</span>
+    {{if eq $o.State "SHLVD"}}<div class="muted small">until {{tsSecP $o.ShelvedExpiry}}</div>{{end}}
   </td>
-  <td class="muted">{{ts $o.ActivatedAt}}</td>
-  <td>{{$d.PLCName}}</td>
-  <td>{{$d.PVName}}</td>
-  <td class="strong">{{$d.Message}}</td>
-  <td><span class="tag">{{$d.AlarmType}}</span> {{$d.Trigger}}</td>
-  <td class="num">{{alarmValue $d $o.PVValue}}</td>
-  <td class="num">{{liveValue $d .Live}}</td>
+  <td class="muted col-act">{{tsSec $o.ActivatedAt}}</td>
+  <td class="col-plc">{{$d.PLCName}}</td>
+  <td class="col-pv">{{$d.PVName}}</td>
+  <td class="strong wrap col-msg">{{$d.Message}}</td>
+  <td class="col-cond"><span class="tag">{{$d.AlarmType}}</span> {{$d.Trigger}}</td>
+  <td class="num col-trip">{{alarmValue $d $o.PVValue}}</td>
+  <td class="num col-cur">{{liveValue $d .Live}}</td>
   <td class="actions">
     {{if canAck $o.State}}<button type="button" class="primary" hx-post="/alarm/{{$o.ID}}/ack" hx-swap="none">Acknowledge</button>{{end}}
     <button type="button" hx-get="/alarm/{{$o.ID}}" hx-target="#alarm-detail" hx-swap="innerHTML">More</button>
   </td>
 </tr>
 {{else}}
-<tr><td colspan="10" class="muted">No outstanding alarms.</td></tr>
+<tr><td colspan="10" class="muted">{{if .Filtered}}No alarms match the filters.{{else}}No outstanding alarms.{{end}}</td></tr>
 {{end}}
 {{end}}

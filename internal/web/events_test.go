@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"PLC_Monitoring/internal/alarms"
 	"PLC_Monitoring/internal/bus"
 	"PLC_Monitoring/internal/live"
 	"PLC_Monitoring/internal/store"
@@ -161,5 +162,80 @@ func TestEventsRejectsABadPVId(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("got %d, want 400", resp.StatusCode)
+	}
+}
+
+type fixedView struct {
+	defs []store.AlarmDef
+	occs []store.Occurrence
+}
+
+func (f fixedView) ListAlarmDefs(context.Context) ([]store.AlarmDef, error) { return f.defs, nil }
+func (f fixedView) ActiveOccurrences(context.Context) ([]store.Occurrence, error) {
+	return f.occs, nil
+}
+
+// The pushed alarm list honours the filter in the stream URL, and the counts
+// line says how many of the outstanding alarms are shown.
+func TestAlarmStreamIsFilteredByTheQuery(t *testing.T) {
+	d := func(id int64, pv, prio, typ string) store.AlarmDef {
+		return store.AlarmDef{ID: id, PVID: int(id), PLCName: "PLC-1", PVName: pv, Priority: prio, AlarmType: typ, Message: pv + " msg", Digital: typ == "DISCRETE"}
+	}
+	repo := fixedView{
+		defs: []store.AlarmDef{d(1, "CRIT_PV", store.PriorityCritical, "HIHI"), d(2, "MAJOR_PV", store.PriorityMajor, "HI"), d(3, "MINOR_PV", store.PriorityMinor, "LO")},
+		occs: []store.Occurrence{
+			{ID: 11, AlarmID: 1, State: store.StateUnack, ActivatedAt: time.Now()},
+			{ID: 12, AlarmID: 2, State: store.StateAcked, ActivatedAt: time.Now()},
+			{ID: 13, AlarmID: 3, State: store.StateUnack, ActivatedAt: time.Now()},
+		},
+	}
+	view := alarms.NewView(repo, 0)
+	if err := view.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	m := live.New(func(context.Context) ([]store.LatestRow, error) { return nil, nil }, nil, 5)
+	tmpl := template.Must(template.New("").Funcs(funcs).ParseFS(templateFS, "templates/*.html"))
+	srv := &Server{live: m, tmpl: tmpl, alarmView: view}
+	r := gin.New()
+	r.GET("/events", srv.events)
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+
+	read := func(query string) (rows, summary string) {
+		resp, err := http.Get(ts.URL + "/events?view=alarms" + query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		ch := readEvents(t, resp)
+		return next(t, ch, "rows", 3*time.Second), next(t, ch, "summary", 3*time.Second)
+	}
+
+	rows, sum := read("")
+	for _, pv := range []string{"CRIT_PV", "MAJOR_PV", "MINOR_PV"} {
+		if !strings.Contains(rows, pv) {
+			t.Errorf("unfiltered list lacks %s", pv)
+		}
+	}
+	if strings.Contains(sum, "Showing") {
+		t.Errorf("unfiltered summary must not say Showing: %q", sum)
+	}
+
+	rows, sum = read("&priority=Critical")
+	if !strings.Contains(rows, "CRIT_PV") || strings.Contains(rows, "MAJOR_PV") || strings.Contains(rows, "MINOR_PV") {
+		t.Errorf("priority=Critical rows = %q", rows)
+	}
+	if !strings.Contains(sum, "Showing <strong>1</strong> of <strong>3</strong>") {
+		t.Errorf("summary = %q", sum)
+	}
+
+	rows, _ = read("&state=NEEDS_ACK&type=LO")
+	if !strings.Contains(rows, "MINOR_PV") || strings.Contains(rows, "CRIT_PV") || strings.Contains(rows, "MAJOR_PV") {
+		t.Errorf("state+type rows = %q", rows)
+	}
+
+	rows, _ = read("&q=nothing-like-this")
+	if !strings.Contains(rows, "No alarms match the filters") {
+		t.Errorf("empty result rows = %q", rows)
 	}
 }

@@ -95,14 +95,14 @@ func TestAlarmTemplatesRenderInEveryState(t *testing.T) {
 	}
 
 	rows := []alarmRow{{E: alarms.Entry{Occ: store.Occurrence{ID: 11, State: store.StateUnack, PVValue: fp(81), ActivatedAt: now}, Def: def}, Live: live}}
-	html, err := s.render("alarm_mgmt_rows.html", rows)
+	html, err := s.render("alarm_mgmt_rows.html", alarmRowsView{Rows: rows})
 	if err != nil || !strings.Contains(html, "Acknowledge") || !strings.Contains(html, `hx-get="/alarm/11"`) || !strings.Contains(html, "More") {
 		t.Errorf("rows: %v %q", err, html)
 	}
-	if html, _ := s.render("alarm_mgmt_rows.html", []alarmRow{}); !strings.Contains(html, "No outstanding alarms") {
+	if html, _ := s.render("alarm_mgmt_rows.html", alarmRowsView{}); !strings.Contains(html, "No outstanding alarms") {
 		t.Errorf("empty list: %q", html)
 	}
-	if html, err := s.render("alarm_summary.html", alarms.Counts{Unack: 2}); err != nil || !strings.Contains(html, "<strong>2</strong>") {
+	if html, err := s.render("alarm_summary.html", alarmSummary{Counts: alarms.Counts{Unack: 2}}); err != nil || !strings.Contains(html, "<strong>2</strong>") || strings.Contains(html, "Showing") {
 		t.Errorf("summary: %v %q", err, html)
 	}
 }
@@ -282,5 +282,111 @@ func TestOnlyApprovedAlarmsDrawTheGaugeBands(t *testing.T) {
 	}
 	if limitOf(defs, store.AlarmLOLO) != nil {
 		t.Error("a draft alarm must not draw a band")
+	}
+}
+
+// ---------------------------------------------------------------------
+// Alarm list filter
+// ---------------------------------------------------------------------
+
+func entry(id int64, plc, pv, typ, prio, class, state, msg string) alarms.Entry {
+	return alarms.Entry{
+		Occ: store.Occurrence{ID: id, State: state},
+		Def: store.AlarmDef{ID: id, PLCName: plc, PVName: pv, AlarmType: typ, Priority: prio, AlarmClass: class, Message: msg},
+	}
+}
+
+func filterOf(q string) alarmFilter {
+	v, _ := url.ParseQuery(q)
+	return parseAlarmFilter(v.Get)
+}
+
+func matchIDs(f alarmFilter, es []alarms.Entry) []int64 {
+	var out []int64
+	for _, e := range es {
+		if f.Match(e) {
+			out = append(out, e.Occ.ID)
+		}
+	}
+	return out
+}
+
+func sameIDs(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestAlarmFilterSelectsExactlyWhatWasAskedFor(t *testing.T) {
+	es := []alarms.Entry{
+		entry(1, "PLC-1", "PT101_PRESSURE", "HIHI", "Critical", "EQUIPMENT_PROTECTION", store.StateUnack, "PT101_PRESSURE very high"),
+		entry(2, "PLC-1", "PT101_PRESSURE", "HI", "Major", "PROCESS", store.StateAcked, "PT101_PRESSURE high"),
+		entry(3, "PLC-1", "XS101", "DISCRETE", "Major", "PROCESS", store.StateRTNUN, "XS101 alarm state"),
+		entry(4, "PLC-2", "LT201", "LO", "Minor", "PROCESS", store.StateShlvd, "Tank low"),
+		entry(5, "PLC-2", "LT201", "LOLO", "Critical", "PROCESS", store.StateUnack, "Tank very low"),
+	}
+	for name, c := range map[string]struct {
+		query string
+		want  []int64
+	}{
+		"no filter":             {"", []int64{1, 2, 3, 4, 5}},
+		"priority Critical":     {"priority=Critical", []int64{1, 5}},
+		"priority Major":        {"priority=Major", []int64{2, 3}},
+		"priority Minor":        {"priority=Minor", []int64{4}},
+		"type HI":               {"type=HI", []int64{2}},
+		"type DISCRETE":         {"type=DISCRETE", []int64{3}},
+		"state UNACK":           {"state=UNACK", []int64{1, 5}},
+		"state RTNUN":           {"state=RTNUN", []int64{3}},
+		"state ACKED":           {"state=ACKED", []int64{2}},
+		"state SHLVD":           {"state=SHLVD", []int64{4}},
+		"needs acknowledgement": {"state=NEEDS_ACK", []int64{1, 3, 5}},
+		"class":                 {"class=EQUIPMENT_PROTECTION", []int64{1}},
+		"plc":                   {"plc=PLC-2", []int64{4, 5}},
+		"search pv (any case)":  {"q=xs101", []int64{3}},
+		"search message":        {"q=VERY", []int64{1, 5}},
+		"search plc":            {"q=plc-2", []int64{4, 5}},
+		"two criteria (AND)":    {"priority=Critical&state=UNACK&plc=PLC-1", []int64{1}},
+		"all four":              {"priority=Critical&type=LOLO&state=UNACK&plc=PLC-2", []int64{5}},
+		"nothing matches":       {"priority=Minor&state=UNACK", nil},
+		"unknown value ignored": {"priority=Urgent&type=XX&state=BOGUS&class=Z", []int64{1, 2, 3, 4, 5}},
+	} {
+		if got := matchIDs(filterOf(c.query), es); !sameIDs(got, c.want) {
+			t.Errorf("%s (%q): got %v, want %v", name, c.query, got, c.want)
+		}
+	}
+}
+
+func TestAlarmFilterQueryRoundTripsAndIsBounded(t *testing.T) {
+	f := filterOf("priority=Major&type=HI&state=NEEDS_ACK&class=PROCESS&plc=PLC-1&q=pump+1")
+	if !f.Active() {
+		t.Fatal("filter not active")
+	}
+	if g := filterOf(f.Query()); g != f {
+		t.Errorf("round trip: %+v != %+v", g, f)
+	}
+	if (alarmFilter{}).Active() || (alarmFilter{}).Query() != "" {
+		t.Error("an empty filter must be inactive with an empty query")
+	}
+	if long := filterOf("q=" + strings.Repeat("x", 500)); len(long.Q) != maxFilterText {
+		t.Errorf("search text not bounded: %d", len(long.Q))
+	}
+}
+
+func TestFilteredListAndCountsAreConsistent(t *testing.T) {
+	s := testServer(t)
+	rows := alarmRowsView{Filtered: true}
+	html, err := s.render("alarm_mgmt_rows.html", rows)
+	if err != nil || !strings.Contains(html, "No alarms match the filters") {
+		t.Errorf("empty filtered list: %v %q", err, html)
+	}
+	html, err = s.render("alarm_summary.html", alarmSummary{Counts: alarms.Counts{Unack: 5}, Shown: 2, Total: 9, Filtered: true})
+	if err != nil || !strings.Contains(html, "Showing <strong>2</strong> of <strong>9</strong>") {
+		t.Errorf("summary: %v %q", err, html)
 	}
 }

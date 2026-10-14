@@ -73,7 +73,11 @@
     streamID = id;
     const base = tb.dataset.stream || "/events";
     const param = base.includes("alarms") ? "alarm" : "pv";
-    stream = new EventSource(base + (id ? (base.includes("?") ? "&" : "?") + param + "=" + id : ""));
+    const extra = [];
+    if (id) extra.push(param + "=" + id);
+    const fq = filterQuery();
+    if (fq) extra.push(fq);
+    stream = new EventSource(base + (extra.length ? (base.includes("?") ? "&" : "?") + extra.join("&") : ""));
     stream.onopen = () => setLiveState("Live", "ok");
     stream.onerror = () => setLiveState("Disconnected — reconnecting…", "bad");
     stream.addEventListener("badge", badge);
@@ -89,6 +93,51 @@
   }
 
   window.addEventListener("DOMContentLoaded", () => openStream(0));
+
+  // ------------------------------------------------------------------
+  // Alarm list filter. The filter lives in the page URL (so a reload or a
+  // shared link keeps it) and in the stream URL (the server filters what it
+  // pushes, so the list stays filtered while it updates).
+  // ------------------------------------------------------------------
+  const filterForm = () => document.getElementById("alarm-filters");
+
+  function filterQuery() {
+    const f = filterForm();
+    if (!f) return "";
+    const p = new URLSearchParams();
+    new FormData(f).forEach((v, k) => {
+      v = String(v).trim();
+      if (v) p.set(k, v);
+    });
+    return p.toString();
+  }
+
+  function applyFilter() {
+    const q = filterQuery();
+    history.replaceState(null, "", location.pathname + (q ? "?" + q : "") + location.hash);
+    openStream(streamID); // the first push of the new stream is already filtered
+  }
+
+  window.addEventListener("DOMContentLoaded", () => {
+    const f = filterForm();
+    if (!f) return;
+    // On a phone the filters start folded away (unless one is set) to leave room for the list.
+    const box = document.getElementById("filter-box");
+    if (box && window.matchMedia("(max-width: 760px)").matches && !filterQuery()) box.open = false;
+    f.addEventListener("change", applyFilter);
+    let timer = null;
+    f.addEventListener("input", (e) => {
+      if (e.target.name !== "q") return;
+      clearTimeout(timer);
+      timer = setTimeout(applyFilter, 250); // typing: wait for a pause
+    });
+    document.getElementById("alarm-filter-reset").addEventListener("click", () => {
+      f.reset();
+      f.querySelectorAll("select").forEach((s) => { s.value = ""; });
+      f.querySelector("[name=q]").value = "";
+      applyFilter();
+    });
+  });
 
   // Alarm page: result of Acknowledge / Shelve / Unshelve (HX-Trigger alarmMsg).
   document.body.addEventListener("alarmMsg", (e) => {
