@@ -31,15 +31,12 @@
   <td>{{.Unit}}</td>
   {{if .IsDigital}}
   <td class="num" colspan="2">{{.State0Text}} / {{.State1Text}}</td>
-  <td class="num">{{alarmStateText .PV}}</td>
   <td class="num">on change</td>
   {{else}}
   <td class="num">{{f .Min}}</td>
   <td class="num">{{f .Max}}</td>
-  <td class="num">{{optNum .AlarmLow}} / {{optNum .AlarmHigh}}</td>
   <td class="num">{{f .Deadband}}</td>
   {{end}}
-  <td class="num">{{.Priority}}</td>
   <td>{{if .Enabled}}<span class="badge ok">Yes</span>{{else}}<span class="badge none">No</span>{{end}}</td>
   <td class="actions">
     <button type="button" hx-get="/config/pvs/{{.ID}}/edit" hx-target="#form-body">Edit</button>

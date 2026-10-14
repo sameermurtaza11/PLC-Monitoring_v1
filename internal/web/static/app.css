@@ -153,3 +153,7 @@ details.shelve .cfg-form { padding: 8px 0 4px; min-width: min(460px, 80vw); }
 .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }
 .stat span { color: var(--muted); font-size: 12px; }
 .stat strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+
+/* menu badge: alarms waiting for an acknowledgement */
+.nav-badge { display: inline-block; min-width: 18px; margin-left: 6px; padding: 0 6px; border-radius: 9px; background: #dc2626; color: #fff; font-size: 12px; font-weight: 700; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+.nav-badge[hidden] { display: none; }

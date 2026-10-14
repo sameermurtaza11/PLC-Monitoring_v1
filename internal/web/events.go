@@ -40,6 +40,9 @@ type frame struct{ event, html string }
 //	/events?pv=ID                   + the live block of that PV ("live")
 //	/events?view=alarms             alarm list ("rows") and its counts ("summary")
 //	/events?view=alarms&alarm=OCC   + that alarm's "detail" and "actions"
+//	/events?view=badge              only the menu badge ("badge") — for pages without live rows
+//
+// Every stream also carries "badge": the number of alarms waiting for an acknowledgement.
 //
 // Each connection reads the live module's memory itself, so a slow browser can
 // only delay its own connection: it is conflated to the newest state (nothing
@@ -68,9 +71,12 @@ func (s *Server) events(c *gin.Context) {
 	var produce func(listChanged bool) []frame
 	var version func() [2]uint64
 	switch view {
+	case "badge":
+		version = func() [2]uint64 { return [2]uint64{0, s.alarmVersion()} }
+		produce = func(bool) []frame { return []frame{s.badgeFrame()} }
 	case "", "pv":
-		version = func() [2]uint64 { return [2]uint64{s.live.Version(), 0} }
-		produce = func(bool) []frame { return s.pvFrames(int(id)) }
+		version = func() [2]uint64 { return [2]uint64{s.live.Version(), s.alarmVersion()} }
+		produce = func(bool) []frame { return append(s.pvFrames(int(id)), s.badgeFrame()) }
 	case "alarms":
 		if s.alarmView == nil {
 			c.String(http.StatusServiceUnavailable, "alarms are not available")
@@ -170,12 +176,12 @@ func (s *Server) events(c *gin.Context) {
 // pvFrames: dashboard rows and, for an open PV detail, its live block.
 func (s *Server) pvFrames(pvID int) []frame {
 	var out []frame
-	if rows, err := s.render("pv_rows.html", s.live.Snapshot()); err == nil {
+	if rows, err := s.render("pv_rows.html", s.pvRowViews()); err == nil {
 		out = append(out, frame{"rows", rows})
 	}
 	if pvID != 0 {
 		if row, ok := s.live.Get(pvID); ok {
-			if html, err := s.render("pv_live.html", row); err == nil {
+			if html, err := s.render("pv_live.html", s.rowView(row)); err == nil {
 				out = append(out, frame{"live", html})
 			}
 		}
@@ -186,7 +192,7 @@ func (s *Server) pvFrames(pvID int) []frame {
 // alarmFrames: the alarm list, its counts and, for an open alarm detail, the
 // changing part of the modal and its action buttons.
 func (s *Server) alarmFrames(c *gin.Context, occ int64, user *auth.User, events *[]store.HistoryEvent) []frame {
-	var out []frame
+	out := []frame{s.badgeFrame()}
 	if rows, err := s.renderAlarmRows(); err == nil {
 		out = append(out, frame{"rows", rows})
 	}
@@ -209,3 +215,13 @@ func (s *Server) alarmFrames(c *gin.Context, occ int64, user *auth.User, events 
 	}
 	return out
 }
+
+func (s *Server) alarmVersion() uint64 {
+	if s.alarmView == nil {
+		return 0
+	}
+	return s.alarmView.Version()
+}
+
+// badgeFrame carries the number for the menu badge.
+func (s *Server) badgeFrame() frame { return frame{"badge", strconv.Itoa(s.unackCount())} }

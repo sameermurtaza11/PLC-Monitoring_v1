@@ -170,16 +170,15 @@ func (s *Store) GetPV(ctx context.Context, id int) (PVRecord, error) {
 // SavePV inserts (ID == 0) or updates a PV. Returns the pv_id.
 func (s *Store) SavePV(ctx context.Context, r PVRecord) (int, error) {
 	args := []any{r.PLCID, r.RegisterAddress, r.Name, r.SystemName, r.Equipment,
-		r.Description, r.Unit, r.Min, r.Max, r.Priority, r.AlarmLow, r.AlarmHigh,
-		r.Deadband, r.Enabled, r.State0Text, r.State1Text, r.AlarmState}
+		r.Description, r.Unit, r.Min, r.Max,
+		r.Deadband, r.Enabled, r.State0Text, r.State1Text}
 	var err error
 	if r.ID == 0 {
 		err = s.pool.QueryRow(ctx, `
 			INSERT INTO pv_metadata
 				(plc_id, register_address, pv_name, system_name, equipment, description,
-				 unit, pv_min, pv_max, priority, alarm_low, alarm_high, deadband, enabled,
-				 state0_text, state1_text, alarm_state)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+				 unit, pv_min, pv_max, deadband, enabled, state0_text, state1_text)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 			RETURNING pv_id`, args...).Scan(&r.ID)
 	} else {
 		var tag pgconn.CommandTag
@@ -187,10 +186,9 @@ func (s *Store) SavePV(ctx context.Context, r PVRecord) (int, error) {
 			UPDATE pv_metadata SET
 				plc_id = $1, register_address = $2, pv_name = $3, system_name = $4,
 				equipment = $5, description = $6, unit = $7, pv_min = $8, pv_max = $9,
-				priority = $10, alarm_low = $11, alarm_high = $12, deadband = $13,
-				enabled = $14, state0_text = $15, state1_text = $16, alarm_state = $17,
+				deadband = $10, enabled = $11, state0_text = $12, state1_text = $13,
 				updated_at = now()
-			WHERE pv_id = $18`, append(args, r.ID)...)
+			WHERE pv_id = $14`, append(args, r.ID)...)
 		if err == nil && tag.RowsAffected() == 0 {
 			err = pgx.ErrNoRows
 		}

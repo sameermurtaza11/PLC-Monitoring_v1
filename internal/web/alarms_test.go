@@ -1,10 +1,12 @@
 package web
 
 import (
+	"context"
 	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"PLC_Monitoring/internal/alarms"
+	"PLC_Monitoring/internal/auth"
+	"PLC_Monitoring/internal/live"
 	"PLC_Monitoring/internal/store"
 )
 
@@ -189,5 +193,94 @@ func TestResponseTimeLine(t *testing.T) {
 	def.MaxResponseTimeS = nil
 	if r := respLine(def, store.Occurrence{State: store.StateUnack, ActivatedAt: act}); r.Text != "not defined" {
 		t.Errorf("no limit: %+v", r)
+	}
+}
+
+func TestMenuBadgeShowsAlarmsWaitingForAcknowledgement(t *testing.T) {
+	s := testServer(t)
+	base := gin.H{"Page": "alarms", "Nav": navFor(&auth.User{Role: auth.Operator}), "User": nil}
+	for count, wantHidden := range map[int]bool{0: true, 3: false} {
+		data := gin.H{}
+		for k, v := range base {
+			data[k] = v
+		}
+		data["Unack"] = count
+		html, err := s.render("nav", data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(html, `id="nav-badge"`) || !strings.Contains(html, ">"+strconv.Itoa(count)+"</span>") {
+			t.Errorf("count %d: badge missing or wrong in %q", count, html)
+		}
+		if hidden := strings.Contains(html, `title="Alarms waiting for acknowledgement" hidden`); hidden != wantHidden {
+			t.Errorf("count %d: hidden = %v, want %v", count, hidden, wantHidden)
+		}
+		if strings.Count(html, `id="nav-badge"`) != 1 {
+			t.Errorf("the badge must appear once, on the Alarms link only")
+		}
+	}
+	if got := (alarms.Counts{Unack: 2, Returned: 1, Acked: 5, Shelved: 4}).NeedsAck(); got != 3 {
+		t.Errorf("NeedsAck = %d, want unacknowledged + returned-unacknowledged (3), not acknowledged or shelved", got)
+	}
+}
+
+func TestEveryStreamCarriesTheBadgeAndPagesWithoutRowsGetTheirOwn(t *testing.T) {
+	m := live.New(func(context.Context) ([]store.LatestRow, error) { return nil, nil }, nil, 5)
+	ts := liveServer(t, m)
+	for _, path := range []string{"/events", "/events?view=badge"} {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := next(t, readEvents(t, resp), "badge", 3*time.Second); strings.TrimSpace(got) != "0" {
+			t.Errorf("%s: badge = %q, want 0", path, got)
+		}
+		resp.Body.Close()
+	}
+}
+
+// Alarm limits no longer live in pv_metadata: the dashboard status comes from
+// the alarm system's active alarms.
+func TestDashboardStatusComesFromTheActiveAlarm(t *testing.T) {
+	q := store.QualityGood
+	ts := time.Now()
+	row := store.LatestRow{PV: store.PV{ID: 1, Name: "P"}, Quality: &q, TS: &ts, ScanIntervalMS: 1000, Value: fp(90)}
+	major := &store.AlarmDef{AlarmType: store.AlarmHI, Priority: store.PriorityMajor}
+	critical := &store.AlarmDef{AlarmType: store.AlarmHIHI, Priority: store.PriorityCritical}
+	discrete := &store.AlarmDef{AlarmType: store.AlarmDiscrete, Priority: store.PriorityMinor}
+	for name, c := range map[string]struct {
+		alarm *store.AlarmDef
+		want  Status
+	}{
+		"no alarm": {nil, Status{"Normal", "ok"}}, "HI": {major, Status{"HI", "warn"}},
+		"HIHI critical": {critical, Status{"HIHI", "bad"}}, "discrete": {discrete, Status{"ALARM", "warn"}},
+	} {
+		if got := rowStatus(pvRow{LatestRow: row, Alarm: c.alarm}); got != c.want {
+			t.Errorf("%s: %+v, want %+v", name, got, c.want)
+		}
+	}
+	// a communication problem is shown before an alarm
+	bq := store.QualityCommFail
+	row.Quality = &bq
+	if got := rowStatus(pvRow{LatestRow: row, Alarm: critical}); got.Text != store.QualityCommFail {
+		t.Errorf("bad quality with an alarm: %+v", got)
+	}
+}
+
+func TestOnlyApprovedAlarmsDrawTheGaugeBands(t *testing.T) {
+	hi := sampleDef()
+	lo := sampleDef()
+	lo.AlarmType, lo.Setpoint = store.AlarmLO, fp(20)
+	draft := sampleDef()
+	draft.AlarmType, draft.Setpoint, draft.RationalizationStatus = store.AlarmLOLO, fp(5), store.RationDraft
+	defs := []store.AlarmDef{hi, lo, draft}
+	if v := limitOf(defs, store.AlarmHI); v == nil || *v != 80 {
+		t.Errorf("HI limit = %v", v)
+	}
+	if v := limitOf(defs, store.AlarmLO); v == nil || *v != 20 {
+		t.Errorf("LO limit = %v", v)
+	}
+	if limitOf(defs, store.AlarmLOLO) != nil {
+		t.Error("a draft alarm must not draw a band")
 	}
 }

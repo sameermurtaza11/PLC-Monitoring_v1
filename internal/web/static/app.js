@@ -63,6 +63,8 @@
     detail: () => document.getElementById("alarm-dyn"),
     actions: () => document.getElementById("alarm-actions"),
   };
+  // "badge" carries only a number for the menu badge (see nav.js).
+  const badge = (e) => window.updateNavBadge && window.updateNavBadge(Number(e.data));
 
   function openStream(id) {
     const tb = liveRows();
@@ -74,6 +76,7 @@
     stream = new EventSource(base + (id ? (base.includes("?") ? "&" : "?") + param + "=" + id : ""));
     stream.onopen = () => setLiveState("Live", "ok");
     stream.onerror = () => setLiveState("Disconnected — reconnecting…", "bad");
+    stream.addEventListener("badge", badge);
     Object.keys(targets).forEach((name) => {
       stream.addEventListener(name, (e) => {
         const el = targets[name]();

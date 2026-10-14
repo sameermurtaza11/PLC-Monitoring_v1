@@ -26,13 +26,9 @@ type PV struct {
 	Unit            string
 	Min             float64
 	Max             float64
-	Priority        int
-	AlarmLow        *float64
-	AlarmHigh       *float64
-	Deadband        float64
-	State0Text      string // digital only: text for 0, e.g. "STOPPED"
-	State1Text      string // digital only: text for 1, e.g. "RUNNING"
-	AlarmState      *int   // digital only: nil = no alarm, 0/1 = alarm in that state
+	Deadband        float64 // HISTORY deadband (storage only), not an alarm deadband: alarms live in alarm_metadata
+	State0Text      string  // digital only: text for 0, e.g. "STOPPED"
+	State1Text      string  // digital only: text for 1, e.g. "RUNNING"
 }
 
 // IsDigital: 10001-19999 = Modbus discrete input, 1 bit, value 0/1.

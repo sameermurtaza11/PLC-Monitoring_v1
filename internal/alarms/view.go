@@ -134,6 +134,10 @@ func (v *View) Version() uint64 { return v.version.Load() }
 // Counts summarises the list by state.
 type Counts struct{ Unack, Acked, Returned, Shelved int }
 
+// NeedsAck is how many alarms wait for the operator: unacknowledged ones, and
+// those that returned to normal but were never acknowledged.
+func (c Counts) NeedsAck() int { return c.Unack + c.Returned }
+
 func (v *View) Counts() Counts {
 	var c Counts
 	for _, e := range v.Snapshot() {

@@ -37,7 +37,7 @@ Digital inputs:
 | Table | Purpose |
 |---|---|
 | `plc_metadata` | one row per PLC: name, IP, port, unit id, scan interval, timeout, enabled |
-| `pv_metadata`  | one row per PV: `plc_id` + register, name, system, equipment, unit, scaling, alarms, deadband, state texts |
+| `pv_metadata`  | one row per PV: `plc_id` + register, name, system, equipment, unit, scaling, history deadband, state texts (alarm limits and priorities are NOT here: see `alarm_metadata`) |
 | `pv_latest`    | last value + quality per PV (dashboard reads only this) |
 | `pv_history`   | timestamped samples, PK `(pv_id, ts)` |
 
@@ -166,3 +166,13 @@ runs on a database whose name contains `scratch` or `test` (it empties `users`):
 $env:PLC_TEST_DATABASE_URL = "postgres://postgres@localhost:5432/plc_users_scratch"
 go test ./internal/store/ -run Integration -v
 ```
+
+## Alarm settings and test alarms
+
+- `migrations/005_move_alarm_columns.sql` moves the old per-PV alarm settings (`priority`, `alarm_low`, `alarm_high`,
+  `alarm_state`) out of `pv_metadata`: they are copied to `alarm_metadata` as unapproved drafts, then the columns are dropped.
+  `pv_metadata.deadband` stays: it is the *history* deadband used by the storage module. Back up first (`pg_dump`).
+- `scripts/seed_test_alarms.sql` configures sample alarms for every PV of the demo plant so the alarm system can be tried
+  against live data (stored as approved, approver "test-data seed"). Test data only — replace with rationalized alarms.
+- Dashboard status and the PV gauge bands come from the alarm tables; the menu badge on **Alarms** shows how many alarms
+  are waiting for an acknowledgement (unacknowledged, or returned to normal but not yet acknowledged).

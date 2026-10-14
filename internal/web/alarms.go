@@ -32,6 +32,7 @@ func init() {
 		"durSec":     func(s *float64) string { return secText(s) },
 		"alarmValue": alarmValue,
 		"eventValue": eventValue,
+		"rowStatus":  rowStatus,
 		"liveValue":  liveValue,
 		"canAck":     func(state string) bool { return state == store.StateUnack || state == store.StateRTNUN },
 		"respLine":   respLine,
@@ -211,6 +212,15 @@ func (s *Server) alarmRows() []alarmRow {
 
 func (s *Server) renderAlarmRows() (string, error) {
 	return s.render("alarm_mgmt_rows.html", s.alarmRows())
+}
+
+// unackCount is the number shown in the menu badge: alarms waiting for an
+// acknowledgement (see alarms.Counts.NeedsAck).
+func (s *Server) unackCount() int {
+	if s.alarmView == nil {
+		return 0
+	}
+	return s.alarmView.Counts().NeedsAck()
 }
 
 func (s *Server) renderAlarmSummary() (string, error) {
@@ -513,4 +523,100 @@ func inList(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------
+// Alarm state on the dashboard
+// ---------------------------------------------------------------------
+
+// pvRow is a dashboard row: the live values of a PV plus its active alarm, if
+// any. Alarm limits are not part of pv_metadata; they come from the alarm tables.
+type pvRow struct {
+	store.LatestRow
+	Alarm *store.AlarmDef // the most severe active (not shelved) alarm of this PV
+}
+
+func severityRank(d *store.AlarmDef) int {
+	r := 0
+	switch d.Priority {
+	case store.PriorityCritical:
+		r = 20
+	case store.PriorityMajor:
+		r = 10
+	}
+	if d.AlarmType == store.AlarmHIHI || d.AlarmType == store.AlarmLOLO {
+		r += 5
+	}
+	return r
+}
+
+// activeAlarmsByPV maps PV → its most severe alarm whose process condition is
+// abnormal and that is not shelved (a shelved alarm is suppressed).
+func (s *Server) activeAlarmsByPV() map[int]*store.AlarmDef {
+	if s.alarmView == nil {
+		return nil
+	}
+	out := map[int]*store.AlarmDef{}
+	for _, e := range s.alarmView.Snapshot() {
+		if !e.Occ.ProcessConditionActive || e.Occ.State == store.StateShlvd {
+			continue
+		}
+		d := e.Def
+		if cur, ok := out[d.PVID]; !ok || severityRank(&d) > severityRank(cur) {
+			out[d.PVID] = &d
+		}
+	}
+	return out
+}
+
+func (s *Server) rowView(r store.LatestRow) pvRow {
+	return pvRow{LatestRow: r, Alarm: s.activeAlarmsByPV()[r.ID]}
+}
+
+func (s *Server) pvRowViews() []pvRow {
+	rows := s.live.Snapshot()
+	active := s.activeAlarmsByPV()
+	out := make([]pvRow, len(rows))
+	for i, r := range rows {
+		out[i] = pvRow{LatestRow: r, Alarm: active[r.ID]}
+	}
+	return out
+}
+
+// rowStatus: a communication / data problem first, then the PV's active alarm.
+func rowStatus(r pvRow) Status {
+	st := statusOf(r.LatestRow)
+	if st.Class != "ok" || r.Alarm == nil {
+		return st
+	}
+	text, class := "ALARM", "warn"
+	if r.Alarm.AlarmType != store.AlarmDiscrete {
+		text = r.Alarm.AlarmType
+	}
+	if r.Alarm.Priority == store.PriorityCritical {
+		class = "bad"
+	}
+	return Status{text, class}
+}
+
+// limitOf returns the setpoint of an active-evaluable analog alarm of that type.
+func limitOf(defs []store.AlarmDef, typ string) *float64 {
+	for _, d := range defs {
+		if d.AlarmType == typ && d.Evaluable() && d.Setpoint != nil {
+			v := *d.Setpoint
+			return &v
+		}
+	}
+	return nil
+}
+
+// discreteState returns the abnormal state of an evaluable discrete alarm.
+func discreteState(defs []store.AlarmDef) *int {
+	for _, d := range defs {
+		if d.AlarmType == store.AlarmDiscrete && d.Evaluable() && d.TriggerState != nil {
+			v := *d.TriggerState
+			return &v
+		}
+	}
+	return nil
 }

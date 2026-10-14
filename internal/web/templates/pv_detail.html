@@ -1,4 +1,4 @@
-{{define "pv_detail.html"}}{{$pv := .PV}}{{$s := status $pv}}
+{{define "pv_detail.html"}}{{$pv := .PV}}
 <div class="detail" data-pv-id="{{$pv.ID}}">
   <h2>{{$pv.Name}} <span class="muted">· {{$pv.PLCName}} · {{$pv.RegisterAddress}}</span></h2>
 
@@ -7,14 +7,14 @@
       {{if $pv.IsDigital}}
       <!-- Digital input: a lamp instead of a gauge. app.js switches it from data-value. -->
       <div id="pv-lamp" class="lamp" data-state0="{{$pv.State0Text}}" data-state1="{{$pv.State1Text}}"
-           data-alarm-state="{{if $pv.AlarmState}}{{deref2 $pv.AlarmState}}{{end}}">
+           data-alarm-state="{{if .AlarmState}}{{deref2 .AlarmState}}{{end}}">
         <span class="lamp-dot"></span><span class="lamp-text">—</span>
       </div>
       {{else}}
       <!-- Live gauge (ECharts). Scale = pv_min … pv_max from pv_metadata. -->
       <div id="pv-gauge" class="gauge"
            data-min="{{f $pv.Min}}" data-max="{{f $pv.Max}}" data-unit="{{$pv.Unit}}"
-           data-alarm-low="{{rawValue $pv.AlarmLow}}" data-alarm-high="{{rawValue $pv.AlarmHigh}}"></div>
+           data-alarm-low="{{rawValue .AlarmLow}}" data-alarm-high="{{rawValue .AlarmHigh}}"></div>
       {{end}}
       <!-- Replaced by the pushed "live" event (app.js), which also moves the gauge needle. -->
       <div class="live-wrap">
@@ -31,16 +31,15 @@
       {{if $pv.IsDigital}}
       <dt>Type</dt><dd>Discrete input, 1 bit (FC02)</dd>
       <dt>States</dt><dd>0 = {{$pv.State0Text}} · 1 = {{$pv.State1Text}}</dd>
-      <dt>Alarm</dt><dd>{{alarmStateText $pv.PV}}</dd>
       <dt>History</dt><dd>stored on every state change (+1/min)</dd>
       {{else}}
       <dt>Type</dt><dd>{{if ge $pv.RegisterAddress 40001}}Holding register{{else}}Input register{{end}}, 16 bit</dd>
       <dt>Unit</dt><dd>{{orDash $pv.Unit}}</dd>
       <dt>Scaling</dt><dd>{{f $pv.Min}} … {{f $pv.Max}} (raw 0 … 65535)</dd>
-      <dt>Alarm low / high</dt><dd>{{optNum $pv.AlarmLow}} / {{optNum $pv.AlarmHigh}}</dd>
-      <dt>Deadband</dt><dd>{{f $pv.Deadband}}</dd>
+      <dt>History deadband</dt><dd>{{f $pv.Deadband}}</dd>
       {{end}}
-      <dt>Priority</dt><dd>{{$pv.Priority}}</dd>
+      <dt>Alarms</dt>
+      <dd>{{range .Alarms}}<div><span class="tag">{{.AlarmType}}</span> {{.Trigger}} · {{.Priority}}{{if not .Evaluable}} <span class="muted">(not active: {{if eq .RationalizationStatus "DRAFT"}}draft{{else if not .Enabled}}disabled{{else}}check configuration{{end}})</span>{{end}}</div>{{else}}none configured{{end}}</dd>
       <dt>Scan interval</dt><dd>{{$pv.ScanIntervalMS}} ms</dd>
     </dl>
   </div>
@@ -71,7 +70,7 @@
 </div>
 {{end}}
 
-{{define "pv_live.html"}}{{$s := status .}}
+{{define "pv_live.html"}}{{$s := rowStatus .}}
 <div class="current" data-value="{{rawValue .Value}}" data-quality="{{$s.Text}}">
   <span class="badge {{$s.Class}}">{{$s.Text}}</span>
   <span class="strong">{{display .}}{{if not .IsDigital}} {{.Unit}}{{end}}</span>

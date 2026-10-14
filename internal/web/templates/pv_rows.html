@@ -1,5 +1,5 @@
 {{define "pv_rows.html"}}
-{{range .}}{{$s := status .}}
+{{range .}}{{$s := rowStatus .}}
 <tr>
   <td>{{.PLCName}}</td>
   <td>{{.RegisterAddress}} <span class="tag">{{kind .RegisterAddress}}</span></td>

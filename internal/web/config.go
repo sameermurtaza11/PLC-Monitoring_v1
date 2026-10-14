@@ -161,7 +161,7 @@ func (s *Server) pvList(c *gin.Context) {
 
 func (s *Server) pvForm(c *gin.Context) {
 	f := form{Values: map[string]string{
-		"pv_min": "0", "pv_max": "100", "priority": "3", "deadband": "0", "enabled": "on",
+		"pv_min": "0", "pv_max": "100", "deadband": "0", "enabled": "on",
 		"state0_text": "OFF", "state1_text": "ON",
 		"plc_id": c.Query("plc"),
 	}}
@@ -177,10 +177,9 @@ func (s *Server) pvForm(c *gin.Context) {
 			"plc_id": strconv.Itoa(r.PLCID), "register_address": strconv.Itoa(r.RegisterAddress),
 			"pv_name": r.Name, "system_name": r.SystemName, "equipment": r.Equipment,
 			"description": r.Description, "unit": r.Unit,
-			"pv_min": ftoa(r.Min), "pv_max": ftoa(r.Max), "priority": strconv.Itoa(r.Priority),
-			"alarm_low": optFtoa(r.AlarmLow), "alarm_high": optFtoa(r.AlarmHigh),
+			"pv_min": ftoa(r.Min), "pv_max": ftoa(r.Max),
 			"deadband": ftoa(r.Deadband), "enabled": onOff(r.Enabled),
-			"state0_text": r.State0Text, "state1_text": r.State1Text, "alarm_state": optItoa(r.AlarmState),
+			"state0_text": r.State0Text, "state1_text": r.State1Text,
 		}
 	}
 	s.renderPVForm(c, f)
@@ -197,8 +196,8 @@ func (s *Server) renderPVForm(c *gin.Context, f form) {
 
 func (s *Server) pvSave(c *gin.Context) {
 	f := readForm(c, "plc_id", "register_address", "pv_name", "system_name", "equipment",
-		"description", "unit", "pv_min", "pv_max", "priority", "alarm_low", "alarm_high", "deadband", "enabled",
-		"state0_text", "state1_text", "alarm_state")
+		"description", "unit", "pv_min", "pv_max", "deadband", "enabled",
+		"state0_text", "state1_text")
 	f.ID, _ = strconv.Atoi(c.Param("id"))
 
 	r := store.PVRecord{Enabled: f.Checked("enabled")}
@@ -216,32 +215,18 @@ func (s *Server) pvSave(c *gin.Context) {
 	r.Name = requiredText(f, "pv_name", 64)
 	r.SystemName, r.Equipment, r.Description, r.Unit =
 		f.V("system_name"), f.V("equipment"), f.V("description"), f.V("unit")
-	r.Priority = intField(f, "priority", 1, 5)
 	if r.IsDigital() {
 		// Digital input: value is 0/1. Scaling is fixed to 0…1 so trends and
 		// "% of range" comparisons work; analog-only fields are cleared.
 		r.Min, r.Max, r.Deadband, r.Unit = 0, 1, 0, ""
 		r.State0Text = requiredText(f, "state0_text", 32)
 		r.State1Text = requiredText(f, "state1_text", 32)
-		switch f.V("alarm_state") {
-		case "":
-		case "0", "1":
-			v, _ := strconv.Atoi(f.V("alarm_state"))
-			r.AlarmState = &v
-		default:
-			f.Errors["alarm_state"] = "Choose no alarm, 0 or 1"
-		}
 	} else {
 		r.State0Text, r.State1Text = "OFF", "ON"
 		r.Min = floatField(f, "pv_min")
 		r.Max = floatField(f, "pv_max")
 		if f.Errors["pv_min"] == "" && f.Errors["pv_max"] == "" && r.Max <= r.Min {
 			f.Errors["pv_max"] = "PV max must be greater than PV min"
-		}
-		r.AlarmLow = optFloatField(f, "alarm_low")
-		r.AlarmHigh = optFloatField(f, "alarm_high")
-		if r.AlarmLow != nil && r.AlarmHigh != nil && *r.AlarmLow >= *r.AlarmHigh {
-			f.Errors["alarm_high"] = "Alarm high must be greater than alarm low"
 		}
 		r.Deadband = floatField(f, "deadband")
 		if f.Errors["deadband"] == "" && r.Deadband < 0 {

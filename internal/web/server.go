@@ -205,11 +205,24 @@ func (s *Server) pvDetail(c *gin.Context) {
 	if err != nil {
 		log.Printf("web: pv options: %v", err)
 	}
-	c.HTML(http.StatusOK, "pv_detail.html", gin.H{
-		"PV":      row,
+	data := gin.H{
+		"PV":      s.rowView(row),
 		"Options": options,
 		"Ranges":  rangeOrder,
-	})
+	}
+	// The alarms of this PV (from the alarm tables) drive the gauge bands / lamp.
+	var defs []store.AlarmDef
+	if all, err := s.store.ListAlarmDefs(c.Request.Context()); err != nil {
+		log.Printf("web: pv %d alarms: %v", id, err)
+	} else {
+		for _, d := range all {
+			if d.PVID == id {
+				defs = append(defs, d)
+			}
+		}
+	}
+	data["Alarms"], data["AlarmLow"], data["AlarmHigh"], data["AlarmState"] = defs, limitOf(defs, store.AlarmLO), limitOf(defs, store.AlarmHI), discreteState(defs)
+	c.HTML(http.StatusOK, "pv_detail.html", data)
 }
 
 // ---------------------------------------------------------------------
@@ -222,8 +235,8 @@ type Status struct {
 	Class string // CSS class: ok | warn | bad | none
 }
 
-// statusOf decides a PV's status. Order matters: comm problems first,
-// then stale data, then alarms.
+// statusOf decides a PV's communication / data status: no data, bad quality,
+// stale, else Normal. Alarm conditions come from the alarm system (rowStatus).
 func statusOf(r store.LatestRow) Status {
 	if r.TS == nil || r.Quality == nil {
 		return Status{"No data", "none"}
@@ -235,18 +248,6 @@ func statusOf(r store.LatestRow) Status {
 	staleAfter := max(3*time.Duration(r.ScanIntervalMS)*time.Millisecond, 5*time.Second)
 	if time.Since(*r.TS) > staleAfter {
 		return Status{"STALE", "bad"}
-	}
-	if r.IsDigital() {
-		if r.Value != nil && r.AlarmState != nil && int(*r.Value) == *r.AlarmState {
-			return Status{"ALARM", "warn"}
-		}
-		return Status{"Normal", "ok"}
-	}
-	if r.Value != nil && r.AlarmHigh != nil && *r.Value >= *r.AlarmHigh {
-		return Status{"HIGH", "warn"}
-	}
-	if r.Value != nil && r.AlarmLow != nil && *r.Value <= *r.AlarmLow {
-		return Status{"LOW", "warn"}
 	}
 	return Status{"Normal", "ok"}
 }
@@ -290,7 +291,7 @@ var funcs = template.FuncMap{
 	},
 	// display: the value as an operator reads it — state text for digital
 	// inputs, 2 decimals for analog values.
-	"display": func(r store.LatestRow) string {
+	"display": func(r pvRow) string {
 		if r.Value == nil {
 			return "—"
 		}
@@ -312,12 +313,6 @@ var funcs = template.FuncMap{
 	},
 	"deref":  func(v *float64) float64 { return *v },
 	"deref2": func(v *int) int { return *v },
-	"alarmStateText": func(pv store.PV) string {
-		if pv.AlarmState == nil {
-			return "—"
-		}
-		return "when " + pv.StateText(float64(*pv.AlarmState))
-	},
 	"num": func(v *float64) string {
 		if v == nil {
 			return "—"

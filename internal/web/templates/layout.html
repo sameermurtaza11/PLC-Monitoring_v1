@@ -3,7 +3,7 @@
   <h1>PLC Monitoring</h1>
   <nav>
     {{$page := .Page}}
-    {{range .Nav}}<a href="{{.Href}}" {{if eq .Key $page}}class="active"{{end}}>{{.Label}}</a>{{end}}
+    {{range .Nav}}<a href="{{.Href}}" {{if eq .Key $page}}class="active"{{end}}>{{.Label}}{{if eq .Key "alarms"}}<span id="nav-badge" class="nav-badge" title="Alarms waiting for acknowledgement" {{if not $.Unack}}hidden{{end}}>{{$.Unack}}</span>{{end}}</a>{{end}}
   </nav>
   {{if .User}}
   <div class="account-nav">
@@ -14,5 +14,6 @@
     </form>
   </div>
   {{end}}
+  <script src="/static/nav.js" defer></script>
 </header>
 {{end}}

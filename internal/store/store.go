@@ -38,15 +38,13 @@ func (s *Store) Close() { s.pool.Close() }
 const pvColumns = `
 	pv.pv_id, pv.plc_id, pv.register_address, pv.pv_name, pv.system_name,
 	pv.equipment, pv.description, pv.unit, pv.pv_min, pv.pv_max,
-	pv.priority, pv.alarm_low, pv.alarm_high, pv.deadband,
-	pv.state0_text, pv.state1_text, pv.alarm_state`
+	pv.deadband, pv.state0_text, pv.state1_text`
 
 func scanPV(row pgx.Row, pv *PV, extra ...any) error {
 	dest := []any{
 		&pv.ID, &pv.PLCID, &pv.RegisterAddress, &pv.Name, &pv.SystemName,
 		&pv.Equipment, &pv.Description, &pv.Unit, &pv.Min, &pv.Max,
-		&pv.Priority, &pv.AlarmLow, &pv.AlarmHigh, &pv.Deadband,
-		&pv.State0Text, &pv.State1Text, &pv.AlarmState,
+		&pv.Deadband, &pv.State0Text, &pv.State1Text,
 	}
 	return row.Scan(append(dest, extra...)...)
 }

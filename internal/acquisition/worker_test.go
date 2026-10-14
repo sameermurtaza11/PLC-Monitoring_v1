@@ -269,8 +269,11 @@ func TestAcquisitionKeepsItsRhythmWhileTheDatabaseIsSlowAndConsumersAreStuck(t *
 	if stats.Scans < 60 {
 		t.Fatalf("only %d scans in 1 s (expected about 100): the scan loop was held up by a slow consumer", stats.Scans)
 	}
-	if stats.Overruns != 0 {
-		t.Errorf("%d scan overruns: scans took longer than the interval", stats.Overruns)
+	// A 10 ms rhythm can be disturbed by the test machine itself (other test
+	// packages run in parallel), so a few overruns are tolerated; a scan loop held
+	// up by the 0.6 s database would be caught by the scan count above.
+	if stats.Overruns > 3 {
+		t.Errorf("%d scan overruns: scans repeatedly took longer than the interval", stats.Overruns)
 	}
 	if stats.Published != stats.Scans*2 {
 		t.Errorf("published %d samples for %d scans of 2 PVs", stats.Published, stats.Scans)

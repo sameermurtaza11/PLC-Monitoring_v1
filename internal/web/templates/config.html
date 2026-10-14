@@ -49,8 +49,8 @@
       <table class="pv-table">
         <thead>
           <tr><th>PLC</th><th>Register</th><th>PV Name</th><th>System</th><th>Equipment</th><th>Unit</th>
-              <th class="num">Min / 0-text</th><th class="num">Max / 1-text</th><th class="num">Alarm</th>
-              <th class="num">History</th><th class="num">Prio</th><th>Enabled</th><th></th></tr>
+              <th class="num">Min / 0-text</th><th class="num">Max / 1-text</th>
+              <th class="num">History deadband</th><th>Enabled</th><th></th></tr>
         </thead>
         <tbody id="pv-rows" hx-get="/config/pvs" hx-include="#pv-filter"
                hx-trigger="load, configSaved from:body" hx-swap="innerHTML">

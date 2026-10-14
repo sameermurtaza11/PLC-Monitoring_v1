@@ -44,13 +44,11 @@
       {{template "field_error" (fe . "register_address")}}</label>
     <label>PV name *<input name="pv_name" value="{{.V "pv_name"}}" required maxlength="64">
       {{template "field_error" (fe . "pv_name")}}</label>
-    <label>Priority (1 = highest) *<input name="priority" type="number" min="1" max="5" value="{{.V "priority"}}" required>
-      {{template "field_error" (fe . "priority")}}</label>
     <label>System<input name="system_name" value="{{.V "system_name"}}"></label>
     <label>Equipment<input name="equipment" value="{{.V "equipment"}}"></label>
   </div>
 
-  <!-- Analog (3xxxx / 4xxxx): scaling, unit, alarms, deadband -->
+  <!-- Analog (3xxxx / 4xxxx): scaling, unit, history deadband. Alarms are configured under Alarm Configuration. -->
   <fieldset class="grid2 analog-only">
     <legend>Analog — 16-bit register, scaled</legend>
     <label>Unit<input name="unit" value="{{.V "unit"}}" placeholder="bar, °C, %">
@@ -62,26 +60,15 @@
       {{template "field_error" (fe . "pv_min")}}</label>
     <label>PV max (raw 65535) *<input name="pv_max" type="number" step="any" value="{{.V "pv_max"}}">
       {{template "field_error" (fe . "pv_max")}}</label>
-    <label>Alarm low<input name="alarm_low" type="number" step="any" value="{{.V "alarm_low"}}" placeholder="none">
-      {{template "field_error" (fe . "alarm_low")}}</label>
-    <label>Alarm high<input name="alarm_high" type="number" step="any" value="{{.V "alarm_high"}}" placeholder="none">
-      {{template "field_error" (fe . "alarm_high")}}</label>
   </fieldset>
 
-  <!-- Digital (1xxxx): state texts and alarm state -->
+  <!-- Digital (1xxxx): state texts. Alarms are configured under Alarm Configuration. -->
   <fieldset class="grid2 digital-only">
     <legend>Digital — 1-bit discrete input</legend>
     <label>Text for 0 *<input name="state0_text" value="{{.V "state0_text"}}" maxlength="32" placeholder="OFF / STOPPED / CLOSED">
       {{template "field_error" (fe . "state0_text")}}</label>
     <label>Text for 1 *<input name="state1_text" value="{{.V "state1_text"}}" maxlength="32" placeholder="ON / RUNNING / OPEN">
       {{template "field_error" (fe . "state1_text")}}</label>
-    <label>Alarm
-      <select name="alarm_state">
-        <option value="" {{if eq (.V "alarm_state") ""}}selected{{end}}>No alarm</option>
-        <option value="0" {{if eq (.V "alarm_state") "0"}}selected{{end}}>Alarm when 0</option>
-        <option value="1" {{if eq (.V "alarm_state") "1"}}selected{{end}}>Alarm when 1</option>
-      </select>
-      {{template "field_error" (fe . "alarm_state")}}</label>
     <span class="hint">History is stored on every state change (+1 row/min).</span>
   </fieldset>
 
